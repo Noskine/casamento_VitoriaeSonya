@@ -98,27 +98,43 @@ export default function RsvpForm() {
   const [guests, setGuests] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
 
+  // Conexão com o servidor para enviar o RSVP
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (status !== "idle") return;
+  e.preventDefault();
+  if (status !== "idle") return;
 
-    const data = Object.fromEntries(new FormData(e.currentTarget));
-    setStatus("sending");
+  const data = Object.fromEntries(new FormData(e.currentTarget));
+  setStatus("sending");
 
-    try {
-      // 🔌 Troque por sua API / Formspree / Resend:
-      // await fetch("/api/rsvp", {
-      //   method: "POST",
-      //   headers: { "Content-Type": "application/json" },
-      //   body: JSON.stringify({ ...data, attending, guests }),
-      // });
-      console.log("RSVP:", { ...data, attending, guests });
-      await new Promise((r) => setTimeout(r, 1100));
-      setStatus("done");
-    } catch {
-      setStatus("idle");
+  try {
+    const res = await fetch("/api/rsvp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...data, attending, guests }),
+    });
+
+    // Prazo encerrado enquanto o usuário preenchia
+    if (res.status === 410) {
+      window.location.reload();
+      return;
     }
+
+    // Rate limit
+    if (res.status === 429) {
+      throw new Error("Muitas tentativas. Aguarde um minuto.");
+    }
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error ?? "Não foi possível enviar.");
+    }
+
+    setStatus("done");
+  } catch (err) {
+    console.error(err);
+    setStatus("idle");
   }
+}
 
   return (
     <section className="relative overflow-hidden px-6 pb-24 pt-16 sm:pt-20">
