@@ -5,12 +5,20 @@ import { motion, AnimatePresence } from "motion/react";
 import { logoutAction } from "./actions";
 import Ornament from "../components/Ornament";
 import type { StoredRsvp } from "../../lib/rsvp-store";
+import { default as Link } from "next/link";
+import { Gift } from "../../lib/gift-store";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
 type Filter = "all" | "yes" | "no";
 
-export default function DashboardClient({ rsvps }: { rsvps: StoredRsvp[] }) {
+export default function DashboardClient({
+  rsvps,
+  gifts,
+}: {
+  rsvps: StoredRsvp[];
+  gifts: Gift[];
+}) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -111,7 +119,20 @@ export default function DashboardClient({ rsvps }: { rsvps: StoredRsvp[] }) {
             </h1>
             <Ornament className="mt-5 !justify-start" />
           </div>
-
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <Link
+              href="/admin"
+              className="rounded-full border border-gold bg-gold px-5 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-cream"
+            >
+              Confirmações
+            </Link>
+            <Link
+              href="/admin/presentes"
+              className="rounded-full border border-ink/15 px-5 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-ink/60 transition-colors hover:border-gold/50 hover:text-gold"
+            >
+              Presentes ({gifts.filter((g) => g.active).length})
+            </Link>
+          </div>
           <form action={logoutAction}>
             <button
               type="submit"
@@ -171,9 +192,8 @@ export default function DashboardClient({ rsvps }: { rsvps: StoredRsvp[] }) {
                   <button
                     key={opt.value}
                     onClick={() => setFilter(opt.value)}
-                    className={`relative rounded-full px-4 py-1.5 text-[0.62rem] uppercase tracking-[0.25em] transition-colors ${
-                      active ? "text-cream" : "text-ink/50 hover:text-ink"
-                    }`}
+                    className={`relative rounded-full px-4 py-1.5 text-[0.62rem] uppercase tracking-[0.25em] transition-colors ${active ? "text-cream" : "text-ink/50 hover:text-ink"
+                      }`}
                   >
                     {active && (
                       <motion.span
@@ -261,19 +281,17 @@ function StatCard({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.7, delay, ease: EASE }}
-      className={`rounded-2xl border px-6 py-5 ${
-        highlight
+      className={`rounded-2xl border px-6 py-5 ${highlight
           ? "border-gold/40 bg-gold/[0.06]"
           : "border-ink/[0.07] bg-cream"
-      }`}
+        }`}
     >
       <p className="text-[0.6rem] uppercase tracking-[0.35em] text-ink/45">
         {label}
       </p>
       <p
-        className={`mt-2 font-display text-4xl font-light tabular-nums ${
-          highlight ? "text-gold" : "text-ink"
-        }`}
+        className={`mt-2 font-display text-4xl font-light tabular-nums ${highlight ? "text-gold" : "text-ink"
+          }`}
       >
         {value}
       </p>
@@ -308,9 +326,8 @@ function RsvpRow({
       >
         {/* Status dot */}
         <span
-          className={`h-2 w-2 shrink-0 rounded-full ${
-            yes ? "bg-gold" : "bg-ink/20"
-          }`}
+          className={`h-2 w-2 shrink-0 rounded-full ${yes ? "bg-gold" : "bg-ink/20"
+            }`}
         />
 
         {/* Nome + email */}
@@ -408,3 +425,4 @@ function Detail({
     </div>
   );
 }
+
