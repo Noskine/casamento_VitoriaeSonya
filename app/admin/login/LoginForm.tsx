@@ -21,7 +21,7 @@ export default function LoginForm() {
         Painel interno
       </p>
       <h1 className="mt-4 font-display text-3xl font-light">
-        Ana <span className="italic text-gold">&</span> Lucas
+        Vitória <span className="italic text-gold">&</span> Sonay
       </h1>
       <Ornament className="mt-6" />
 
@@ -72,7 +72,7 @@ export default function LoginForm() {
       </form>
 
       <p className="mt-8 text-[0.62rem] text-ink/35">
-        A senha é a mesma definida em <code>RSVP_ADMIN_SECRET</code>.
+        A senha é a mesma definida em <code>ADMIN_SECRET</code>.
       </p>
     </motion.div>
   );

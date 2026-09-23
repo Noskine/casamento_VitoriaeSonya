@@ -36,7 +36,7 @@ export async function isAuthenticated(): Promise<boolean> {
 
 export async function login(password: string): Promise<boolean> {
   if (!process.env.RSVP_ADMIN_SECRET) return false;
-  if (password !== process.env.RSVP_ADMIN_SECRET) return false;
+  if (password !== process.env.ADMIN_SECRET) return false;
 
   const store = await cookies();
   store.set(COOKIE_NAME, makeToken(), {
