@@ -1,6 +1,7 @@
+// lib/rsvp-store.ts
 import "server-only";
 import { createHash } from "node:crypto";
-import { supabase } from "./supabase";
+import { getSupabase } from "./supabase";
 import type { RsvpInput } from "./rsvp-schema";
 
 export type StoredRsvp = RsvpInput & {
@@ -52,6 +53,8 @@ export async function saveRsvp(
   input: RsvpInput,
   meta: SaveMeta = {},
 ): Promise<StoredRsvp> {
+  const supabase = getSupabase(); // ← aqui
+
   const { data, error } = await supabase
     .from("rsvps")
     .upsert(
@@ -77,6 +80,8 @@ export async function saveRsvp(
 }
 
 export async function listRsvps(): Promise<StoredRsvp[]> {
+  const supabase = getSupabase(); // ← aqui
+
   const { data, error } = await supabase
     .from("rsvps")
     .select("*")
