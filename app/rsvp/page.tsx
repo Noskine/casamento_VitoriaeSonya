@@ -10,7 +10,7 @@ import { isRsvpOpen } from "../../lib/rsvp";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Confirmação de Presença · Ana & Lucas",
+  title: "Confirmação de Presença · Vitória & Sonay",
   description:
     "Confirme sua presença no nosso casamento. Confirmações abertas até 1º de novembro de 2026.",
 };
