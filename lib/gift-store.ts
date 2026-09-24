@@ -16,8 +16,11 @@ export type Gift = {
   contributorsCount: number;
   /** Nomes de quem já pagou — útil no admin. */
   contributors: string[];
+  reservedBy: string | null; // Adicionado
+  paid: boolean;
   createdAt: string;
 };
+
 
 type GiftRow = {
   id: string;
