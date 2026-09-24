@@ -10,10 +10,7 @@ export const dynamic = "force-dynamic";
  * Força uma consulta ao Mercado Pago e atualiza a reserva.
  * Útil quando o webhook atrasou ou falhou.
  */
-export async function POST(
-  _req: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(req: Request) {
   const { id } = await params;
 
   if (!id || !/^[0-9a-f-]{36}$/i.test(id)) {
