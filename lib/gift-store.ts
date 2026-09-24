@@ -15,6 +15,7 @@ export type Gift = {
   reservedBy: string | null;
   paid: boolean;
   createdAt: string;
+  contributorsCount: number;
 };
 
 type GiftRow = {
@@ -85,6 +86,7 @@ export async function listGifts(
       active: g.active,
       reservedBy: r?.name ?? null,
       paid: r?.paid ?? false,
+      contributorsCount: r ? 1 : 0, // ← NOVO
       createdAt: g.created_at,
     };
   });
