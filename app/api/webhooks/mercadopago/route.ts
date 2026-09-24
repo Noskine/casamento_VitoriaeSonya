@@ -1,20 +1,14 @@
-// app/api/reservations/[id]/sync/route.ts
-
-import { getSupabase } from "../../../../lib/supabase";
-import { getPaymentClient } from "../../../../lib/mercadopago";
-
+// app/api/webhooks/mercadopago/route.ts
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-
-import { notifyCouplePayment } from "../../../../lib/email";
+import { getSupabase } from "../../../../lib/supabase";
+import { getPaymentClient } from "../../../../lib/mercadopago";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Status do MP que significam "pagamento não vai acontecer". */
 const DEAD_STATUSES = ["cancelled", "expired", "rejected", "refunded"];
 
-/** Valida a assinatura HMAC-SHA256 enviada pelo Mercado Pago. */
 function validateSignature(
   xSignature: string,
   xRequestId: string,
@@ -23,7 +17,6 @@ function validateSignature(
   const secret = process.env.MERCADOPAGO_WEBHOOK_SECRET;
   if (!secret) return false;
 
-  // O formato do header é: ts=123,v1=abc...
   const parts = Object.fromEntries(
     xSignature.split(",").map((p) => {
       const [k, v] = p.split("=");
@@ -35,7 +28,6 @@ function validateSignature(
   const v1 = parts.v1;
   if (!ts || !v1) return false;
 
-  // A string assinada tem o formato documentado pelo MP
   const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
 
   const expected = createHmac("sha256", secret)
@@ -52,7 +44,6 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    // Sempre 200 para o MP não reenviar em loop
     return NextResponse.json({ received: true }, { status: 200 });
   }
 
@@ -69,7 +60,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Processa de forma assíncrona — o MP espera resposta em até 22s
   if (body.type === "payment") {
     processPayment(paymentId).catch((err) =>
       console.error("[webhook] processPayment:", err),
@@ -82,7 +72,6 @@ export async function POST(req: Request) {
 async function processPayment(paymentId: string) {
   const supabase = getSupabase();
 
-  // 1. Busca o pagamento no MP
   let payment;
   try {
     payment = await getPaymentClient().get({ id: paymentId });
@@ -100,16 +89,13 @@ async function processPayment(paymentId: string) {
   const status = payment.status ?? "unknown";
   const method = payment.payment_method_id ?? null;
 
-  // 2. Busca a reserva — use maybeSingle porque o cron pode tê-la apagado
   const { data: existing } = await supabase
     .from("gift_reservations")
     .select("id, payment_id, payment_status, gift_id")
     .eq("id", reservationId)
     .maybeSingle();
 
-  // ---------------------------------------------------------------------------
-  // CASO A: A reserva não existe mais (o cron de 30 min já a removeu)
-  // ---------------------------------------------------------------------------
+  // CASO A: Reserva já foi apagada pelo cron
   if (!existing) {
     console.warn(
       `[webhook] Reserva ${reservationId} não existe mais. ` +
@@ -125,9 +111,7 @@ async function processPayment(paymentId: string) {
     return;
   }
 
-  // ---------------------------------------------------------------------------
-  // CASO B: Idempotência — se já registramos esse payment_id e status, ignora
-  // ---------------------------------------------------------------------------
+  // CASO B: Idempotência
   if (
     existing.payment_id === paymentId &&
     existing.payment_status === status
@@ -135,10 +119,7 @@ async function processPayment(paymentId: string) {
     return;
   }
 
-  // ---------------------------------------------------------------------------
-  // CASO C: Pagamento morreu (cancelado, expirado, rejeitado ou reembolsado)
-  //         → libera o presente, apagando a reserva
-  // ---------------------------------------------------------------------------
+  // CASO C: Pagamento morreu → libera o presente
   if (DEAD_STATUSES.includes(status)) {
     console.log(
       `[webhook] Pagamento ${paymentId} com status "${status}". ` +
@@ -161,10 +142,7 @@ async function processPayment(paymentId: string) {
     return;
   }
 
-  // ---------------------------------------------------------------------------
-  // CASO D: Pagamento em processamento (pending, in_process, authorized)
-  //         → atualiza o status sem liberar nada
-  // ---------------------------------------------------------------------------
+  // CASO D: Pagamento em processamento
   if (
     status === "pending" ||
     status === "in_process" ||
@@ -179,15 +157,11 @@ async function processPayment(paymentId: string) {
       })
       .eq("id", reservationId);
 
-    console.log(
-      `[webhook] Pagamento ${paymentId} ainda pendente (${status}).`,
-    );
+    console.log(`[webhook] Pagamento ${paymentId} ainda pendente (${status}).`);
     return;
   }
 
-  // ---------------------------------------------------------------------------
-  // CASO E: Pagamento aprovado → marca como "paid" e notifica os noivos
-  // ---------------------------------------------------------------------------
+  // CASO E: Pagamento aprovado
   if (status === "approved") {
     const { error } = await supabase
       .from("gift_reservations")
@@ -205,26 +179,12 @@ async function processPayment(paymentId: string) {
       return;
     }
 
-    const amountCents = payment.transaction_amount
-      ? Math.round(payment.transaction_amount * 100)
-      : 0;
-
-    await notifyCouplePayment({
-      reservationId,
-      paymentId,
-      amountCents,
-      method: method ?? "unknown",
-      payerName: payment.payer?.first_name ?? "Convidado",
-      payerEmail: payment.payer?.email ?? "",
-    }).catch((err) => console.error("[webhook] notify:", err));
-
     console.log(
       `[webhook] ✅ Pagamento ${paymentId} aprovado. Reserva ${reservationId} marcada como paga.`,
     );
     return;
   }
 
-  // Status desconhecido — apenas loga
   console.warn(
     `[webhook] Pagamento ${paymentId} com status não tratado: "${status}"`,
   );

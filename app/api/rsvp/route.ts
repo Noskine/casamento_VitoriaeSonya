@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { RSVP_DEADLINE_LABEL, isRsvpOpen } from "../../../lib/rsvp";
 import { rsvpSchema } from "../../../lib/rsvp-schema";
 import { listRsvps, saveRsvp } from "../../../lib/rsvp-store";
-import { notifyCouple } from "../../../lib/email";
 import { rateLimit } from "../../../lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -50,12 +49,13 @@ export async function POST(req: Request) {
       userAgent: req.headers.get("user-agent") ?? undefined,
     });
 
-    notifyCouple(stored).catch((err) =>
-      console.error("[rsvp] Falha ao notificar:", err),
-    );
-
     return NextResponse.json(
-      { ok: true, id: stored.id, attending: stored.attending, guests: stored.guests },
+      {
+        ok: true,
+        id: stored.id,
+        attending: stored.attending,
+        guests: stored.guests,
+      },
       { status: 201 },
     );
   } catch (err) {
@@ -79,6 +79,7 @@ export async function GET(req: Request) {
 
   try {
     const rows = await listRsvps();
+
     const yes = rows.filter((r) => r.attending === "yes");
     const no = rows.filter((r) => r.attending === "no");
     const totalPeople = yes.reduce((sum, r) => sum + 1 + r.guests, 0);
