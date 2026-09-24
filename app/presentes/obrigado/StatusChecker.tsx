@@ -1,14 +1,16 @@
 // app/presentes/obrigado/StatusChecker.tsx
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import Ornament from "../../components/Ornament";
+import { formatBRL } from "../../../lib/gift-schema";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
-const POLL_INTERVAL = 3000; // 3 segundos
-const MAX_ATTEMPTS = 40; // ~2 minutos
+const POLL_INTERVAL = 3000;
+const SYNC_INTERVAL = 10000;
+const MAX_ATTEMPTS = 60;
 
 type ReservationStatus = {
   status: string;
@@ -19,7 +21,24 @@ type ReservationStatus = {
   gift: { name: string; image_url: string | null } | null;
 };
 
-type View = "checking" | "paid" | "pending" | "failed" | "expired" | "timeout";
+type SyncResult = {
+  status?: string;
+  paymentStatus?: string | null;
+  paymentMethod?: string | null;
+  paidAt?: string | null;
+  amountCents?: number | null;
+  synced?: boolean;
+  recovered?: boolean;
+  message?: string;
+};
+
+type View =
+  | "checking"
+  | "paid"
+  | "pending"
+  | "failed"
+  | "expired"
+  | "timeout";
 
 export default function StatusChecker({
   reservationId,
@@ -35,17 +54,50 @@ export default function StatusChecker({
     return "checking";
   });
   const [data, setData] = useState<ReservationStatus | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
   const attemptsRef = useRef(0);
+  const lastSyncRef = useRef(0);
+  const cancelledRef = useRef(false);
+
+  /* ----------------------------- Sync no MP ------------------------------ */
+
+  const syncNow = useCallback(async (): Promise<SyncResult | null> => {
+    try {
+      const res = await fetch(`/api/reservations/${reservationId}/sync`, {
+        method: "POST",
+        cache: "no-store",
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as SyncResult;
+    } catch (err) {
+      console.error("[sync] erro:", err);
+      return null;
+    }
+  }, [reservationId]);
+
+  /* ------------------------------ Polling -------------------------------- */
 
   useEffect(() => {
-    // Se já está num estado terminal pelo parâmetro da URL, não precisa poll
+    cancelledRef.current = false;
+
     if (view === "paid" || view === "failed") return;
 
-    let cancelled = false;
+    function handleMaxAttempts() {
+      if (attemptsRef.current >= MAX_ATTEMPTS) {
+        setView((current) => {
+          if (
+            current === "paid" ||
+            current === "failed" ||
+            current === "expired"
+          )
+            return current;
+          return "timeout";
+        });
+      }
+    }
 
-    async function check() {
-      attemptsRef.current += 1;
-
+    async function checkStatus() {
       try {
         const res = await fetch(
           `/api/reservations/${reservationId}/status`,
@@ -53,18 +105,39 @@ export default function StatusChecker({
         );
 
         if (!res.ok) {
-          if (attemptsRef.current >= MAX_ATTEMPTS) {
-            if (!cancelled) setView("timeout");
-          }
+          handleMaxAttempts();
           return;
         }
 
         const json: ReservationStatus = await res.json();
-        if (cancelled) return;
+        if (cancelledRef.current) return;
+
+        if (json.status === "expired" && json.paymentStatus === null) {
+          const syncResult = await syncNow();
+          if (cancelledRef.current) return;
+
+          if (syncResult?.paymentStatus === "approved") {
+            try {
+              const res2 = await fetch(
+                `/api/reservations/${reservationId}/status`,
+                { cache: "no-store" },
+              );
+              const json2: ReservationStatus = await res2.json();
+              if (json2.paymentStatus === "approved") {
+                setData(json2);
+                setView("paid");
+                return;
+              }
+            } catch {
+              // segue
+            }
+          }
+          setView("expired");
+          return;
+        }
 
         setData(json);
 
-        // Decide a tela com base no status
         if (json.paymentStatus === "approved" || json.status === "paid") {
           setView("paid");
           return;
@@ -85,27 +158,104 @@ export default function StatusChecker({
           setView("pending");
         }
 
-        // Continua tentando enquanto não atingir o limite
-        if (attemptsRef.current >= MAX_ATTEMPTS) {
-          setView("timeout");
-        }
+        handleMaxAttempts();
       } catch (err) {
         console.error("[status checker] erro:", err);
       }
     }
 
-    check(); // primeira checagem imediata
-    const interval = setInterval(check, POLL_INTERVAL);
+    async function tick() {
+      if (cancelledRef.current) return;
+      attemptsRef.current += 1;
+
+      const now = Date.now();
+      if (now - lastSyncRef.current > SYNC_INTERVAL) {
+        lastSyncRef.current = now;
+        const syncResult = await syncNow();
+        if (cancelledRef.current) return;
+
+        if (syncResult?.paymentStatus === "approved") {
+          await checkStatus();
+          return;
+        }
+
+        if (syncResult?.paymentStatus) {
+          setData((prev) => ({
+            status: syncResult.status ?? prev?.status ?? "reserved",
+            paymentStatus: syncResult.paymentStatus ?? null,
+            paymentMethod:
+              syncResult.paymentMethod ?? prev?.paymentMethod ?? null,
+            paidAt: syncResult.paidAt ?? prev?.paidAt ?? null,
+            amountCents: syncResult.amountCents ?? prev?.amountCents ?? null,
+            gift: prev?.gift ?? null,
+          }));
+
+          if (syncResult.paymentStatus === "approved") {
+            setView("paid");
+            return;
+          }
+        }
+      }
+
+      await checkStatus();
+    }
+
+    (async () => {
+      const syncResult = await syncNow();
+      if (cancelledRef.current) return;
+
+      if (syncResult?.paymentStatus === "approved") {
+        try {
+          const res = await fetch(
+            `/api/reservations/${reservationId}/status`,
+            { cache: "no-store" },
+          );
+          const json: ReservationStatus = await res.json();
+          setData(json);
+          setView("paid");
+          return;
+        } catch {
+          // segue
+        }
+      }
+
+      if (syncResult?.paymentStatus) {
+        setData({
+          status: syncResult.status ?? "reserved",
+          paymentStatus: syncResult.paymentStatus,
+          paymentMethod: syncResult.paymentMethod ?? null,
+          paidAt: syncResult.paidAt ?? null,
+          amountCents: syncResult.amountCents ?? null,
+          gift: null,
+        });
+      }
+
+      attemptsRef.current += 1;
+      await checkStatus();
+    })();
+
+    const interval = setInterval(tick, POLL_INTERVAL);
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       clearInterval(interval);
     };
-  }, [reservationId, view]);
+  }, [reservationId, view, syncNow]);
+
+  /* ----------------------------- Timer visual ---------------------------- */
+
+  useEffect(() => {
+    if (view === "paid" || view === "failed" || view === "expired") return;
+    const interval = setInterval(() => {
+      setElapsedSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [view]);
+
+  /* ------------------------------ Render --------------------------------- */
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-cream px-6 py-24 text-ink">
-      {/* fundo suave */}
       <div className="pointer-events-none absolute inset-0 -z-10">
         <motion.div
           className="absolute -left-40 top-10 h-[26rem] w-[26rem] rounded-full bg-gold-soft/30 blur-[120px]"
@@ -122,22 +272,33 @@ export default function StatusChecker({
       <div className="mx-auto w-full max-w-lg">
         <AnimatePresence mode="wait" initial={false}>
           {view === "checking" && (
-  <CheckingView key="checking" gift={data?.gift ?? null} />
-)}
-{view === "pending" && (
-  <PendingView key="pending" gift={data?.gift ?? null} />
-)}
-{view === "paid" && (
-  <PaidView
-    key="paid"
-    gift={data?.gift ?? null}
-    amountCents={data?.amountCents}
-    method={data?.paymentMethod}
-  />
-)}
+            <CheckingView
+              key="checking"
+              gift={data?.gift}
+              onSync={syncNow}
+            />
+          )}
+          {view === "pending" && (
+            <PendingView
+              key="pending"
+              gift={data?.gift}
+              onSync={syncNow}
+              elapsed={elapsedSeconds}
+            />
+          )}
+          {view === "paid" && (
+            <PaidView
+              key="paid"
+              gift={data?.gift}
+              amountCents={data?.amountCents}
+              method={data?.paymentMethod}
+            />
+          )}
           {view === "failed" && <FailedView key="failed" />}
           {view === "expired" && <ExpiredView key="expired" />}
-          {view === "timeout" && <TimeoutView key="timeout" />}
+          {view === "timeout" && (
+            <TimeoutView key="timeout" onSync={syncNow} />
+          )}
         </AnimatePresence>
       </div>
     </main>
@@ -148,19 +309,31 @@ export default function StatusChecker({
 /*  Estados visuais                                                            */
 /* -------------------------------------------------------------------------- */
 
-const WRAP = "text-center";
+function CheckingView({
+  gift,
+  onSync,
+}: {
+  gift: ReservationStatus["gift"];
+  onSync: () => void | Promise<unknown>;
+}) {
+  const [syncing, setSyncing] = useState(false);
 
-function CheckingView({ gift }: { gift: ReservationStatus["gift"] }) {
+  async function handleSync() {
+    setSyncing(true);
+    await onSync();
+    setTimeout(() => setSyncing(false), 800);
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       transition={{ duration: 0.7, ease: EASE }}
-      className={WRAP}
+      className="text-center"
     >
       <div className="mx-auto h-16 w-16 text-gold">
-        <motion.svg viewBox="0 0 52 52" className="h-full w-full">
+        <svg viewBox="0 0 52 52" className="h-full w-full">
           <circle
             cx="26"
             cy="26"
@@ -187,41 +360,86 @@ function CheckingView({ gift }: { gift: ReservationStatus["gift"] }) {
               ease: "easeInOut",
             }}
           />
-        </motion.svg>
+        </svg>
       </div>
 
       <h1 className="mt-8 font-display text-4xl font-light leading-tight sm:text-5xl">
-        Verificando o pagamento
+        Verificando pagamento
       </h1>
 
       <Ornament className="mt-7" />
 
       <p className="mx-auto mt-7 max-w-md text-sm leading-relaxed text-ink/60">
-        {gift ? (
-          <>
-            Estamos aguardando a confirmação do Mercado Pago para o presente{" "}
-            <strong className="font-medium text-ink">{gift.name}</strong>.
-          </>
-        ) : (
-          "Estamos aguardando a confirmação do Mercado Pago."
-        )}
+        {gift
+          ? `Consultando o Mercado Pago sobre "${gift.name}"…`
+          : "Consultando o Mercado Pago…"}
       </p>
 
       <p className="mt-3 text-xs text-ink/40">
         Isso normalmente leva alguns segundos. Não feche esta página.
       </p>
+
+      {/* Aviso + botão depois de 5 segundos */}
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 5, duration: 0.5 }}
+        className="mt-6 text-[0.65rem] text-ink/40"
+      >
+        Se a página não atualizar em alguns segundos, clique em{" "}
+        <strong>Verificar agora</strong> abaixo.
+      </motion.p>
+
+      <motion.button
+        type="button"
+        onClick={handleSync}
+        disabled={syncing}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 5, duration: 0.5 }}
+        className="mt-4 inline-flex items-center gap-2 rounded-full border border-ink/15 px-5 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-ink/60 transition-colors hover:border-gold/50 hover:text-gold disabled:opacity-50"
+      >
+        {syncing ? (
+          <>
+            <motion.span
+              className="h-3 w-3 rounded-full border-2 border-ink/20 border-t-ink/60"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+            />
+            Verificando…
+          </>
+        ) : (
+          "Verificar agora"
+        )}
+      </motion.button>
     </motion.div>
   );
 }
 
-function PendingView({ gift }: { gift: ReservationStatus["gift"] }) {
+function PendingView({
+  gift,
+  onSync,
+  elapsed,
+}: {
+  gift: ReservationStatus["gift"];
+  onSync: () => void | Promise<unknown>;
+  elapsed: number;
+}) {
+  const [syncing, setSyncing] = useState(false);
+
+  async function handleSync() {
+    setSyncing(true);
+    await onSync();
+    setTimeout(() => setSyncing(false), 800);
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       transition={{ duration: 0.7, ease: EASE }}
-      className={WRAP}
+      className="text-center"
     >
       <div className="mx-auto h-16 w-16 text-gold">
         <svg viewBox="0 0 52 52" className="h-full w-full">
@@ -255,21 +473,48 @@ function PendingView({ gift }: { gift: ReservationStatus["gift"] }) {
       <Ornament className="mt-7" />
 
       <p className="mx-auto mt-7 max-w-md text-sm leading-relaxed text-ink/60">
-        {gift ? (
-          <>
-            O Mercado Pago ainda está processando o pagamento do presente{" "}
-            <strong className="font-medium text-ink">{gift.name}</strong>.
-          </>
-        ) : (
-          "O Mercado Pago ainda está processando o pagamento."
-        )}
+        {gift
+          ? `O Mercado Pago ainda está processando o pagamento de "${gift.name}".`
+          : "O Mercado Pago ainda está processando o pagamento."}
       </p>
 
       <p className="mx-auto mt-3 max-w-md text-xs leading-relaxed text-ink/45">
         Se você pagou via <strong>Pix</strong>, pode levar até 5 minutos. Se foi{" "}
-        <strong>cartão</strong>, costuma ser na hora. Você receberá um e-mail
-        assim que confirmarmos.
+        <strong>cartão</strong>, costuma ser na hora. Verificamos
+        automaticamente a cada 3 segundos.
       </p>
+
+      {elapsed > 15 && (
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="mt-4 text-[0.65rem] text-ink/35"
+        >
+          Verificando há {elapsed}s…
+        </motion.p>
+      )}
+
+      <motion.button
+        type="button"
+        onClick={handleSync}
+        disabled={syncing}
+        whileHover={{ scale: 1.02 }}
+        whileTap={{ scale: 0.98 }}
+        className="mt-8 inline-flex items-center gap-2 rounded-full border border-ink/15 px-6 py-2.5 text-[0.62rem] uppercase tracking-[0.3em] text-ink/60 transition-colors hover:border-gold/50 hover:text-gold disabled:opacity-50"
+      >
+        {syncing ? (
+          <>
+            <motion.span
+              className="h-3 w-3 rounded-full border-2 border-ink/20 border-t-ink/60"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+            />
+            Verificando…
+          </>
+        ) : (
+          "Verificar agora"
+        )}
+      </motion.button>
     </motion.div>
   );
 }
@@ -283,12 +528,8 @@ function PaidView({
   amountCents?: number | null;
   method?: string | null;
 }) {
-  const formatted = amountCents
-    ? new Intl.NumberFormat("pt-BR", {
-        style: "currency",
-        currency: "BRL",
-      }).format(amountCents / 100)
-    : null;
+  const formatted = amountCents ? formatBRL(amountCents) : null;
+  const isPix = method === "pix";
 
   return (
     <motion.div
@@ -296,7 +537,7 @@ function PaidView({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -12 }}
       transition={{ duration: 0.9, ease: EASE }}
-      className={`${WRAP} relative`}
+      className="relative text-center"
     >
       <div className="pointer-events-none absolute inset-0 -z-10">
         <motion.div
@@ -345,14 +586,9 @@ function PaidView({
       <Ornament className="mt-7" />
 
       <p className="mx-auto mt-7 max-w-md text-sm leading-relaxed text-ink/60">
-        {gift ? (
-          <>
-            Seu presente <strong className="font-medium text-ink">{gift.name}</strong> foi
-            confirmado. Mal podemos esperar para celebrar esse dia ao seu lado. 🤍
-          </>
-        ) : (
-          "Seu presente foi confirmado. Mal podemos esperar para celebrar esse dia ao seu lado. 🤍"
-        )}
+        {gift
+          ? `Seu presente "${gift.name}" foi confirmado. Mal podemos esperar para celebrar esse dia ao seu lado. 🤍`
+          : "Seu presente foi confirmado. Mal podemos esperar para celebrar esse dia ao seu lado. 🤍"}
       </p>
 
       {(formatted || method) && (
@@ -369,7 +605,7 @@ function PaidView({
           )}
           {method && (
             <p className="mt-3 text-[0.62rem] uppercase tracking-[0.3em] text-ink/40">
-              via {method === "pix" ? "Pix" : "Cartão"}
+              via {isPix ? "Pix" : "Cartão"}
             </p>
           )}
         </div>
@@ -401,7 +637,7 @@ function FailedView() {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       transition={{ duration: 0.7, ease: EASE }}
-      className={WRAP}
+      className="text-center"
     >
       <div className="mx-auto h-16 w-16 text-ink/30">
         <svg viewBox="0 0 52 52" className="h-full w-full">
@@ -431,10 +667,10 @@ function FailedView() {
 
       <p className="mx-auto mt-7 max-w-md text-sm leading-relaxed text-ink/60">
         Nada foi cobrado. Você pode tentar novamente com outro método de
-        pagamento ou entrar em contato com os noivos.
+        pagamento.
       </p>
 
-      <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row">
+      <div className="mt-12">
         <Link
           href="/#presentes"
           className="rounded-full border border-gold bg-gold px-8 py-3.5 text-[0.7rem] uppercase tracking-[0.3em] text-cream transition-shadow hover:shadow-[0_20px_50px_-20px_rgba(176,141,87,1)]"
@@ -453,7 +689,7 @@ function ExpiredView() {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       transition={{ duration: 0.7, ease: EASE }}
-      className={WRAP}
+      className="text-center"
     >
       <div className="mx-auto h-16 w-16 text-gold">
         <svg viewBox="0 0 52 52" className="h-full w-full">
@@ -483,8 +719,8 @@ function ExpiredView() {
       <Ornament className="mt-7" />
 
       <p className="mx-auto mt-7 max-w-md text-sm leading-relaxed text-ink/60">
-        Passaram-se mais de 30 minutos e o presente foi liberado para outra
-        pessoa. Se você ainda quer presentear, escolha outro item da lista.
+        Passaram-se mais de 30 minutos e a reserva foi liberada. Se você ainda
+        quer presentear, escolha outro item da lista.
       </p>
 
       <div className="mt-12">
@@ -499,14 +735,22 @@ function ExpiredView() {
   );
 }
 
-function TimeoutView() {
+function TimeoutView({ onSync }: { onSync: () => void | Promise<unknown> }) {
+  const [syncing, setSyncing] = useState(false);
+
+  async function handleSync() {
+    setSyncing(true);
+    await onSync();
+    setTimeout(() => setSyncing(false), 800);
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       transition={{ duration: 0.7, ease: EASE }}
-      className={WRAP}
+      className="text-center"
     >
       <div className="mx-auto h-16 w-16 text-gold">
         <svg viewBox="0 0 52 52" className="h-full w-full">
@@ -536,24 +780,21 @@ function TimeoutView() {
       <Ornament className="mt-7" />
 
       <p className="mx-auto mt-7 max-w-md text-sm leading-relaxed text-ink/60">
-        O pagamento está levando mais tempo que o normal. Não se preocupe — você
-        receberá um e-mail assim que o Mercado Pago confirmar.
+        Estamos verificando há alguns minutos. Se você pagou via Pix, o banco
+        pode levar mais tempo para confirmar.
       </p>
 
-      <p className="mx-auto mt-4 max-w-md text-xs leading-relaxed text-ink/45">
-        Se preferir, entre em contato com os noivos pelo WhatsApp para
-        confirmarmos manualmente.
-      </p>
-
-      <div className="mt-12 flex flex-col items-center justify-center gap-4 sm:flex-row">
-        <a
-          href="https://wa.me/5500000000000"
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-full border border-gold bg-gold px-8 py-3.5 text-[0.7rem] uppercase tracking-[0.3em] text-cream transition-shadow hover:shadow-[0_20px_50px_-20px_rgba(176,141,87,1)]"
+      <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
+        <motion.button
+          type="button"
+          onClick={handleSync}
+          disabled={syncing}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          className="inline-flex items-center gap-2 rounded-full border border-gold bg-gold px-8 py-3.5 text-[0.7rem] uppercase tracking-[0.3em] text-cream transition-shadow hover:shadow-[0_20px_50px_-20px_rgba(176,141,87,1)] disabled:opacity-60"
         >
-          Falar com os noivos
-        </a>
+          {syncing ? "Verificando…" : "Verificar novamente"}
+        </motion.button>
         <Link
           href="/#presentes"
           className="text-[0.68rem] uppercase tracking-[0.3em] text-ink/40 underline decoration-ink/20 underline-offset-8 transition-colors hover:text-ink"

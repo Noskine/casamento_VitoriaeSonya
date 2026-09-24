@@ -7,7 +7,7 @@ import StatusChecker from "./StatusChecker";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Obrigado · Ana & Lucas",
+  title: "Obrigado · Vitória & Sonay",
   robots: { index: false, follow: false },
 };
 
