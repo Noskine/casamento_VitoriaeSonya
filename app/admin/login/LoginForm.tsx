@@ -72,7 +72,7 @@ export default function LoginForm() {
       </form>
 
       <p className="mt-8 text-[0.62rem] text-ink/35">
-        A senha é a mesma definida em <code>ADMIN_SECRET</code>.
+        Acesso restrito aos noivos.
       </p>
     </motion.div>
   );
