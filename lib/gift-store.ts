@@ -1,6 +1,7 @@
+// lib/gift-store.ts
 import "server-only";
 import { getSupabase } from "./supabase";
-import type { GiftInput, ReservationInput } from "./gift-schema";
+import type { GiftInput } from "./gift-schema";
 
 export type Gift = {
   id: string;
@@ -11,8 +12,10 @@ export type Gift = {
   externalLink: string;
   position: number;
   active: boolean;
-  reservedBy: string | null;
-  paid: boolean; // ← NOVO
+  /** Quantas pessoas já presentearam (só conta as que pagaram). */
+  contributorsCount: number;
+  /** Nomes de quem já pagou — útil no admin. */
+  contributors: string[];
   createdAt: string;
 };
 
@@ -31,11 +34,9 @@ type GiftRow = {
 type ReservationRow = {
   gift_id: string;
   name: string;
-  status: string;
-  payment_status: string | null; // ← NOVO
+  payment_status: string | null;
 };
 
-/** Lista presentes ativos com info de reserva e pagamento embutida. */
 export async function listGifts(
   opts: { includeInactive?: boolean } = {},
 ): Promise<Gift[]> {
@@ -57,24 +58,22 @@ export async function listGifts(
 
   const ids = gifts.map((g) => g.id);
 
-  // 👇 É AQUI que entra o trecho atualizado
+  // Conta apenas quem PAGOU. Reservas pendentes não aparecem no card público.
   const { data: reservations } = await supabase
     .from("gift_reservations")
-    .select("gift_id, name, status, payment_status")
+    .select("gift_id, name, payment_status")
     .in("gift_id", ids)
-    .in("status", ["reserved", "paid"]);
+    .eq("payment_status", "approved");
 
-  // Mapa gift_id → { name, paid }
-  const map = new Map<string, { name: string; paid: boolean }>();
+  const byGift = new Map<string, string[]>();
   for (const r of (reservations ?? []) as ReservationRow[]) {
-    map.set(r.gift_id, {
-      name: r.name,
-      paid: r.payment_status === "approved",
-    });
+    const list = byGift.get(r.gift_id) ?? [];
+    list.push(r.name);
+    byGift.set(r.gift_id, list);
   }
 
   return (gifts as GiftRow[]).map((g) => {
-    const r = map.get(g.id);
+    const contributors = byGift.get(g.id) ?? [];
     return {
       id: g.id,
       name: g.name,
@@ -84,14 +83,13 @@ export async function listGifts(
       externalLink: g.external_link ?? "",
       position: g.position,
       active: g.active,
-      reservedBy: r?.name ?? null,
-      paid: r?.paid ?? false, // ← NOVO
+      contributorsCount: contributors.length,
+      contributors,
       createdAt: g.created_at,
     };
   });
 }
 
-/** Cria um presente (admin). */
 export async function createGift(input: GiftInput): Promise<Gift> {
   const supabase = getSupabase();
 
@@ -102,6 +100,7 @@ export async function createGift(input: GiftInput): Promise<Gift> {
       description: input.description || null,
       image_url: input.imageUrl || null,
       price_cents: input.priceCents,
+      quota_cents: input.priceCents, // mantém a coluna preenchida, sem usar
       external_link: input.externalLink || null,
       position: input.position ?? 0,
       active: input.active ?? true,
@@ -110,18 +109,17 @@ export async function createGift(input: GiftInput): Promise<Gift> {
     .single();
 
   if (error) throw new Error(error.message);
+
   const all = await listGifts({ includeInactive: true });
   return all.find((g) => g.id === data.id)!;
 }
 
-/** Remove um presente (admin). */
 export async function deleteGift(id: string): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase.from("gifts").delete().eq("id", id);
   if (error) throw new Error(error.message);
 }
 
-/** Alterna ativo/inativo. */
 export async function toggleGift(id: string, active: boolean): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase
@@ -129,22 +127,4 @@ export async function toggleGift(id: string, active: boolean): Promise<void> {
     .update({ active })
     .eq("id", id);
   if (error) throw new Error(error.message);
-}
-
-/** Reserva um presente — agora cria a preferência do Mercado Pago. */
-export async function getGiftById(id: string) {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("gifts")
-    .select("id, name, price_cents, active")
-    .eq("id", id)
-    .single();
-
-  if (error || !data) return null;
-  return data as {
-    id: string;
-    name: string;
-    price_cents: number;
-    active: boolean;
-  };
 }

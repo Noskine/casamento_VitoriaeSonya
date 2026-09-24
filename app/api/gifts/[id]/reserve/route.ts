@@ -7,7 +7,6 @@ import { reservationSchema } from "../../../../../lib/gift-schema";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Minutos que a reserva fica ativa até o pagamento ser concluído. */
 const RESERVATION_TTL_MINUTES = 30;
 
 export async function POST(
@@ -54,7 +53,10 @@ export async function POST(
     );
   }
 
-  // 2. Cria a reserva com status inicial "pending"
+  // ⚠️ AQUI é onde antes existia o bloqueio de "já reservado".
+  // Agora não tem nada — múltiplas reservas são permitidas.
+
+  // 2. Cria a reserva — sem checar duplicidade
   const { data: reservation, error: resErr } = await supabase
     .from("gift_reservations")
     .insert({
@@ -70,12 +72,6 @@ export async function POST(
     .single();
 
   if (resErr) {
-    if (resErr.code === "23505") {
-      return NextResponse.json(
-        { error: "Alguém acabou de reservar este presente." },
-        { status: 409 },
-      );
-    }
     console.error("[reserve]", resErr);
     return NextResponse.json(
       { error: "Não foi possível reservar." },
@@ -83,10 +79,8 @@ export async function POST(
     );
   }
 
-  // 3. Cria a preferência de pagamento no Mercado Pago
+  // 3. Cria a preferência no Mercado Pago
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL!;
-
-  // Calcula a data de expiração da preferência (mesmo prazo da reserva)
   const expiration = new Date(
     Date.now() + RESERVATION_TTL_MINUTES * 60 * 1000,
   ).toISOString();
@@ -98,7 +92,7 @@ export async function POST(
           {
             id: gift.id,
             title: `Presente: ${gift.name}`,
-            description: `Reserva de ${parsed.data.name} para o casamento`,
+            description: `Presente de ${parsed.data.name} para o casamento`,
             quantity: 1,
             unit_price: gift.price_cents / 100,
             currency_id: "BRL",
@@ -108,9 +102,7 @@ export async function POST(
           name: parsed.data.name,
           email: parsed.data.email,
         },
-        // Vincula a preferência à reserva — o webhook usa isso pra achar a linha
         external_reference: reservation.id,
-        // Onde o MP avisa quando o pagamento mudar de status
         notification_url: `${siteUrl}/api/webhooks/mercadopago`,
         back_urls: {
           success: `${siteUrl}/presentes/obrigado?status=approved&rid=${reservation.id}`,
@@ -119,11 +111,7 @@ export async function POST(
         },
         auto_return: "approved",
         statement_descriptor: "CASAMENTO VITORIA SONYA",
-        // Habilita Pix + cartão + boleto (padrão do MP já inclui todos)
-        payment_methods: {
-          installments: 12,
-        },
-        // ⏳ A preferência expira junto com a reserva (30 minutos)
+        payment_methods: { installments: 12 },
         date_of_expiration: expiration,
       },
     });
@@ -132,6 +120,7 @@ export async function POST(
       {
         ok: true,
         reservationId: reservation.id,
+        amountCents: gift.price_cents,
         expiresAt: expiration,
         initPoint: preference.init_point,
         sandboxInitPoint: preference.sandbox_init_point,
@@ -141,7 +130,6 @@ export async function POST(
   } catch (err) {
     console.error("[reserve] MP preference:", err);
 
-    // Se a preferência falhar, apaga a reserva pra não travar o presente
     await supabase.from("gift_reservations").delete().eq("id", reservation.id);
 
     return NextResponse.json(

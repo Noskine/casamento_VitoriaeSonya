@@ -1,8 +1,9 @@
+
 "use client";
 
 import { motion } from "motion/react";
-import { formatBRL } from "../../../lib/gift-schema";
-import type { Gift } from "../../../lib/gift-store";
+import { formatBRL } from "./../../lib/gift-schema";
+import type { Gift } from "./../../lib/gift-store";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
@@ -15,7 +16,7 @@ export default function GiftCard({
   index: number;
   onSelect: () => void;
 }) {
-  const reserved = !!gift.reservedBy;
+  const count = gift.contributorsCount;
 
   return (
     <motion.article
@@ -51,42 +52,6 @@ export default function GiftCard({
         )}
 
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink/30 via-transparent to-transparent" />
-
-        {/* Overlay quando reservado */}
-        {reserved && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.6, ease: EASE }}
-            className="absolute inset-0 flex items-center justify-center bg-ink/60 backdrop-blur-[3px]"
-          >
-            <div className="text-center">
-              <div className="mx-auto mb-3 h-10 w-10 text-cream">
-                <svg viewBox="0 0 52 52" className="h-full w-full">
-                  <circle
-                    cx="26"
-                    cy="26"
-                    r="24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                  />
-                  <path
-                    d="M15 27l8 8 15-16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </div>
-              <p className="text-[0.62rem] uppercase tracking-[0.4em] text-cream/80">
-                Reservado
-              </p>
-            </div>
-          </motion.div>
-        )}
       </div>
 
       {/* Conteúdo */}
@@ -105,29 +70,37 @@ export default function GiftCard({
           <div className="flex items-end justify-between gap-4">
             <div>
               <p className="text-[0.58rem] uppercase tracking-[0.35em] text-ink/40">
-                Valor sugerido
+                Valor
               </p>
               <p className="mt-1 font-display text-2xl tabular-nums text-gold">
                 {formatBRL(gift.priceCents)}
               </p>
             </div>
+
+            {count > 0 && (
+              <motion.p
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: EASE }}
+                className="text-right text-[0.62rem] leading-tight text-ink/40"
+              >
+                {count === 1
+                  ? "1 pessoa já deu"
+                  : `${count} pessoas já deram`}
+              </motion.p>
+            )}
           </div>
 
           <motion.button
             type="button"
             onClick={onSelect}
-            disabled={reserved}
-            whileHover={!reserved ? { scale: 1.015 } : undefined}
-            whileTap={!reserved ? { scale: 0.985 } : undefined}
+            whileHover={{ scale: 1.015 }}
+            whileTap={{ scale: 0.985 }}
             transition={{ duration: 0.2, ease: EASE }}
-            className="group/btn relative mt-5 w-full overflow-hidden rounded-full border border-gold bg-cream px-6 py-3 text-[0.68rem] uppercase tracking-[0.3em] text-gold transition-colors duration-500 hover:text-cream disabled:cursor-not-allowed disabled:border-ink/10 disabled:text-ink/30"
+            className="group/btn relative mt-5 w-full overflow-hidden rounded-full border border-gold bg-cream px-6 py-3 text-[0.68rem] uppercase tracking-[0.3em] text-gold transition-colors duration-500 hover:text-cream"
           >
-            {!reserved && (
-              <span className="absolute inset-0 translate-y-full bg-gold transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/btn:translate-y-0" />
-            )}
-            <span className="relative z-10">
-              {reserved ? "Já reservado" : "Presentear"}
-            </span>
+            <span className="absolute inset-0 translate-y-full bg-gold transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/btn:translate-y-0" />
+            <span className="relative z-10">Presentear</span>
           </motion.button>
         </div>
       </div>

@@ -281,7 +281,8 @@ export default function GiftsAdmin({
                   <p className="truncate font-display text-lg">{gift.name}</p>
                   <p className="truncate text-xs text-ink/45">
                     {formatBRL(gift.priceCents)}
-                    {gift.reservedBy && ` · Reservado por ${gift.reservedBy}`}
+                    {gift.contributorsCount > 0 &&
+  ` · ${gift.contributorsCount} ${gift.contributorsCount === 1 ? "pessoa deu" : "pessoas deram"}`}
                   </p>
                 </div>
 
