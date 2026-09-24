@@ -7,7 +7,7 @@ const CARDS = [
     title: "A Cerimônia",
     time: "15h30",
     place: "Congregação Presbiteriana do Bairro do Coqueiro",
-    address: "falta o endereço · Bairro do Coqueiro, Mairi/BA",
+    address: "Rua Augêncio Antunes dos Santos  · Bairro do Coqueiro, Mairi/BA",
     icon: (
       <svg
         viewBox="0 0 24 24"
