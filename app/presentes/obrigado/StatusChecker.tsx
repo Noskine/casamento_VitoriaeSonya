@@ -122,19 +122,19 @@ export default function StatusChecker({
       <div className="mx-auto w-full max-w-lg">
         <AnimatePresence mode="wait" initial={false}>
           {view === "checking" && (
-            <CheckingView key="checking" gift={data?.gift} />
-          )}
-          {view === "pending" && (
-            <PendingView key="pending" gift={data?.gift} />
-          )}
-          {view === "paid" && (
-            <PaidView
-              key="paid"
-              gift={data?.gift}
-              amountCents={data?.amountCents}
-              method={data?.paymentMethod}
-            />
-          )}
+  <CheckingView key="checking" gift={data?.gift ?? null} />
+)}
+{view === "pending" && (
+  <PendingView key="pending" gift={data?.gift ?? null} />
+)}
+{view === "paid" && (
+  <PaidView
+    key="paid"
+    gift={data?.gift ?? null}
+    amountCents={data?.amountCents}
+    method={data?.paymentMethod}
+  />
+)}
           {view === "failed" && <FailedView key="failed" />}
           {view === "expired" && <ExpiredView key="expired" />}
           {view === "timeout" && <TimeoutView key="timeout" />}
