@@ -6,6 +6,7 @@ import { formatBRL } from "../../../lib/gift-schema";
 import type { Gift } from "../../../lib/gift-store";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
+const RESERVATION_TTL_MINUTES = 30;
 
 const INPUT =
   "w-full rounded-xl border border-ink/10 bg-cream px-4 py-3 text-sm text-ink placeholder:text-ink/30 outline-none transition-colors duration-300 focus:border-gold/60";
@@ -65,9 +66,17 @@ export default function ReserveModal({
         throw new Error(body?.error ?? "Não foi possível reservar.");
       }
 
+      const { initPoint } = await res.json();
+
+      if (!initPoint) {
+        throw new Error("Pagamento indisponível no momento.");
+      }
+
+      // Guarda o nome para uso posterior, se precisar
       setReserverName(name);
-      setStatus("done");
-      onReserved(gift.id, name);
+
+      // Redireciona pro Checkout Pro do Mercado Pago
+      window.location.href = initPoint;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro inesperado.");
       setStatus("idle");
@@ -91,7 +100,7 @@ export default function ReserveModal({
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-ink/[0.07] bg-cream shadow-[0_40px_100px_-40px_rgba(38,34,32,0.6)]"
       >
-        {/* fechar */}
+        {/* Botão de fechar */}
         <button
           type="button"
           onClick={() => status !== "sending" && onClose()}
@@ -116,7 +125,7 @@ export default function ReserveModal({
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.4, ease: EASE }}
             >
-              {/* imagem topo */}
+              {/* Imagem do topo */}
               {gift.imageUrl && (
                 <div className="relative aspect-[16/9] overflow-hidden bg-cream-dark">
                   <img
@@ -224,6 +233,30 @@ export default function ReserveModal({
                     )}
                   </AnimatePresence>
 
+                  {/* Aviso sobre o prazo de 30 minutos */}
+                  <div className="flex items-start gap-2.5 rounded-xl border border-gold/20 bg-gold/[0.05] px-4 py-3">
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="mt-0.5 h-4 w-4 shrink-0 text-gold"
+                    >
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M12 7v5.5l3.2 2" />
+                    </svg>
+                    <p className="text-xs leading-relaxed text-ink/70">
+                      Sua reserva é válida por{" "}
+                      <strong className="font-medium text-ink">
+                        30 minutos
+                      </strong>
+                      . Após esse período, o presente será liberado
+                      automaticamente.
+                    </p>
+                  </div>
+
                   <motion.button
                     type="submit"
                     disabled={status === "sending"}
@@ -245,16 +278,17 @@ export default function ReserveModal({
                               ease: "linear",
                             }}
                           />
-                          Reservando…
+                          Redirecionando…
                         </>
                       ) : (
-                        "Reservar presente"
+                        "Ir para o pagamento"
                       )}
                     </span>
                   </motion.button>
 
                   <p className="pt-1 text-center text-[0.62rem] text-ink/40">
-                    Os dados de pagamento serão combinados depois por e-mail.
+                    Você será redirecionado para o Mercado Pago para escolher
+                    entre Pix, cartão ou boleto.
                   </p>
                 </form>
               </div>
@@ -265,6 +299,8 @@ export default function ReserveModal({
     </motion.div>
   );
 }
+
+/* ---------------------------- Cartão de sucesso --------------------------- */
 
 function SuccessState({
   name,
@@ -332,8 +368,8 @@ function SuccessState({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, delay: 1.15, ease: EASE }}
       >
-        Seu presente foi reservado com sucesso. Em breve vamos entrar em
-        contato pelo e-mail informado com os dados para o pagamento.
+        Seu presente foi reservado com sucesso. Você será redirecionado para o
+        pagamento em instantes…
       </motion.p>
 
       <motion.button

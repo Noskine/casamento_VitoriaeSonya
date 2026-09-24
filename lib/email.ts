@@ -61,3 +61,66 @@ function renderHtml(r: StoredRsvp) {
     </p>
   </div>`;
 }
+
+export async function notifyCouplePayment({
+  reservationId,
+  paymentId,
+  amountCents,
+  method,
+  payerName,
+  payerEmail,
+}: {
+  reservationId: string;
+  paymentId: string;
+  amountCents: number;
+  method: string;
+  payerName: string;
+  payerEmail: string;
+}): Promise<void> {
+  if (!process.env.RESEND_API_KEY) return;
+
+  const to = (process.env.RSVP_NOTIFY_TO ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (to.length === 0) return;
+
+  const { Resend } = await import("resend");
+  const resend = new Resend(process.env.RESEND_API_KEY);
+
+  const formatted = new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(amountCents / 100);
+
+  const methodLabel =
+    method === "pix"
+      ? "Pix"
+      : method.startsWith("master") || method.startsWith("visa")
+        ? "Cartão"
+        : method;
+
+  await resend.emails.send({
+    from: process.env.RSVP_NOTIFY_FROM ?? "Presentes <onboarding@resend.dev>",
+    to,
+    subject: `💛 Presente pago: ${payerName} (${formatted})`,
+    html: `
+      <div style="max-width:560px;margin:0 auto;padding:32px;background:#faf7f2;font-family:system-ui">
+        <p style="margin:0 0 8px;color:#b08d57;font:600 11px system-ui;text-transform:uppercase;letter-spacing:3px">
+          Pagamento confirmado
+        </p>
+        <h1 style="margin:0 0 24px;font:300 28px Georgia,serif;color:#262220">
+          ${formatted} recebidos
+        </h1>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><td style="padding:6px 16px 6px 0;color:#8a7a5c;font:600 11px system-ui;text-transform:uppercase">Convidado</td><td style="padding:6px 0;color:#262220;font:400 14px system-ui">${payerName}</td></tr>
+          <tr><td style="padding:6px 16px 6px 0;color:#8a7a5c;font:600 11px system-ui;text-transform:uppercase">E-mail</td><td style="padding:6px 0;color:#262220;font:400 14px system-ui">${payerEmail}</td></tr>
+          <tr><td style="padding:6px 16px 6px 0;color:#8a7a5c;font:600 11px system-ui;text-transform:uppercase">Método</td><td style="padding:6px 0;color:#262220;font:400 14px system-ui">${methodLabel}</td></tr>
+          <tr><td style="padding:6px 16px 6px 0;color:#8a7a5c;font:600 11px system-ui;text-transform:uppercase">ID pagamento</td><td style="padding:6px 0;color:#262220;font:400 14px system-ui">${paymentId}</td></tr>
+        </table>
+        <p style="margin:32px 0 0;color:#8a7a5c;font:400 11px system-ui">
+          Reserva ${reservationId}
+        </p>
+      </div>`,
+  });
+}
