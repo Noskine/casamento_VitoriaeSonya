@@ -84,15 +84,15 @@ export default function Details() {
                 <p className="mt-1 text-sm leading-relaxed text-ink/45">
                   {card.address}
                 </p>
-                <div className="mt-6">
-                  <p className="mb-4 text-[0.62rem] uppercase tracking-[0.35em] text-ink/40">
-                    Como chegar
-                  </p>
-                  <LocationButtons />
-                </div>
               </div>
             </Reveal>
           ))}
+          <div className="mt-6">
+            <p className="mb-4 text-[0.62rem] uppercase tracking-[0.35em] text-ink/40">
+              Como chegar
+            </p>
+            <LocationButtons />
+          </div>
         </div>
       </div>
     </section>
