@@ -1,7 +1,7 @@
 // lib/gift-store.ts
 import "server-only";
 import { getSupabase } from "./supabase";
-import type { GiftInput } from "./gift-schema";
+import type { GiftInput, ReservationInput } from "./gift-schema";
 
 export type Gift = {
   id: string;
@@ -12,15 +12,10 @@ export type Gift = {
   externalLink: string;
   position: number;
   active: boolean;
-  /** Quantas pessoas já presentearam (só conta as que pagaram). */
-  contributorsCount: number;
-  /** Nomes de quem já pagou — útil no admin. */
-  contributors: string[];
-  reservedBy: string | null; // Adicionado
+  reservedBy: string | null;
   paid: boolean;
   createdAt: string;
 };
-
 
 type GiftRow = {
   id: string;
@@ -37,9 +32,11 @@ type GiftRow = {
 type ReservationRow = {
   gift_id: string;
   name: string;
+  status: string;
   payment_status: string | null;
 };
 
+/** Lista presentes com info de reserva e pagamento embutida. */
 export async function listGifts(
   opts: { includeInactive?: boolean } = {},
 ): Promise<Gift[]> {
@@ -61,22 +58,22 @@ export async function listGifts(
 
   const ids = gifts.map((g) => g.id);
 
-  // Conta apenas quem PAGOU. Reservas pendentes não aparecem no card público.
   const { data: reservations } = await supabase
     .from("gift_reservations")
-    .select("gift_id, name, payment_status")
+    .select("gift_id, name, status, payment_status")
     .in("gift_id", ids)
-    .eq("payment_status", "approved");
+    .in("status", ["reserved", "paid"]);
 
-  const byGift = new Map<string, string[]>();
+  const map = new Map<string, { name: string; paid: boolean }>();
   for (const r of (reservations ?? []) as ReservationRow[]) {
-    const list = byGift.get(r.gift_id) ?? [];
-    list.push(r.name);
-    byGift.set(r.gift_id, list);
+    map.set(r.gift_id, {
+      name: r.name,
+      paid: r.payment_status === "approved",
+    });
   }
 
   return (gifts as GiftRow[]).map((g) => {
-    const contributors = byGift.get(g.id) ?? [];
+    const r = map.get(g.id);
     return {
       id: g.id,
       name: g.name,
@@ -86,13 +83,14 @@ export async function listGifts(
       externalLink: g.external_link ?? "",
       position: g.position,
       active: g.active,
-      contributorsCount: contributors.length,
-      contributors,
+      reservedBy: r?.name ?? null,
+      paid: r?.paid ?? false,
       createdAt: g.created_at,
     };
   });
 }
 
+/** Cria um presente (admin). */
 export async function createGift(input: GiftInput): Promise<Gift> {
   const supabase = getSupabase();
 
@@ -103,7 +101,6 @@ export async function createGift(input: GiftInput): Promise<Gift> {
       description: input.description || null,
       image_url: input.imageUrl || null,
       price_cents: input.priceCents,
-      quota_cents: input.priceCents, // mantém a coluna preenchida, sem usar
       external_link: input.externalLink || null,
       position: input.position ?? 0,
       active: input.active ?? true,
@@ -112,17 +109,18 @@ export async function createGift(input: GiftInput): Promise<Gift> {
     .single();
 
   if (error) throw new Error(error.message);
-
   const all = await listGifts({ includeInactive: true });
   return all.find((g) => g.id === data.id)!;
 }
 
+/** Remove um presente (admin). */
 export async function deleteGift(id: string): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase.from("gifts").delete().eq("id", id);
   if (error) throw new Error(error.message);
 }
 
+/** Alterna ativo/inativo. */
 export async function toggleGift(id: string, active: boolean): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase
@@ -130,4 +128,61 @@ export async function toggleGift(id: string, active: boolean): Promise<void> {
     .update({ active })
     .eq("id", id);
   if (error) throw new Error(error.message);
+}
+
+/**
+ * Reserva um presente (uso antigo — mantido para compatibilidade).
+ * No fluxo do Mercado Pago, a reserva é criada diretamente na rota
+ * /api/gifts/[id]/reserve, mas essa função pode ser útil em testes.
+ */
+export async function reserveGift(
+  giftId: string,
+  input: ReservationInput,
+): Promise<{ ok: true }> {
+  const supabase = getSupabase();
+
+  const { data: gift, error: giftErr } = await supabase
+    .from("gifts")
+    .select("id, active")
+    .eq("id", giftId)
+    .single();
+
+  if (giftErr || !gift) throw new Error("Presente não encontrado.");
+  if (!gift.active) throw new Error("Este presente não está mais disponível.");
+
+  const { error } = await supabase.from("gift_reservations").insert({
+    gift_id: giftId,
+    name: input.name,
+    email: input.email,
+    message: input.message || null,
+    status: "reserved",
+    payment_status: "pending",
+  });
+
+  if (error) {
+    if (error.code === "23505") {
+      throw new Error("Alguém acabou de reservar este presente.");
+    }
+    throw new Error(error.message);
+  }
+
+  return { ok: true };
+}
+
+/** Busca um presente por ID (usado nas rotas de reserva). */
+export async function getGiftById(id: string) {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("gifts")
+    .select("id, name, price_cents, active")
+    .eq("id", id)
+    .single();
+
+  if (error || !data) return null;
+  return data as {
+    id: string;
+    name: string;
+    price_cents: number;
+    active: boolean;
+  };
 }
