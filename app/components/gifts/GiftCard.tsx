@@ -2,8 +2,8 @@
 "use client";
 
 import { motion } from "motion/react";
-import { formatBRL } from "./../../lib/gift-schema";
-import type { Gift } from "./../../lib/gift-store";
+import { formatBRL } from "../../../lib/gift-schema";
+import type { Gift } from "../../../lib/gift-store";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
