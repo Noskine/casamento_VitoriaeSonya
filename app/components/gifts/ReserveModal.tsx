@@ -1,9 +1,7 @@
-"use client";
-
 // app/components/gifts/ReserveModal.tsx
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { formatBRL } from "../../../lib/gift-schema";
 import type { Gift } from "../../../lib/gift-store";
@@ -12,6 +10,21 @@ const EASE = [0.22, 1, 0.36, 1] as const;
 
 const INPUT =
   "w-full rounded-xl border border-ink/10 bg-cream px-4 py-3 text-sm text-ink placeholder:text-ink/30 outline-none transition-colors duration-300 focus:border-gold/60";
+
+/** Converte "150,00" para 15000. */
+function parseBRLtoCents(value: string): number {
+  const clean = value
+    .replace(/[^\d,.-]/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+  const n = parseFloat(clean);
+  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+}
+
+/** Converte 15000 para "150,00". */
+function centsToInput(cents: number): string {
+  return (cents / 100).toFixed(2).replace(".", ",");
+}
 
 export default function ReserveModal({
   gift,
@@ -25,6 +38,20 @@ export default function ReserveModal({
   const [status, setStatus] = useState<"idle" | "sending" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
   const [reserverName, setReserverName] = useState("");
+
+  // Valor que falta pra completar o presente
+  const remainingCents = useMemo(
+    () => Math.max(0, gift.priceCents - gift.raisedCents),
+    [gift.priceCents, gift.raisedCents],
+  );
+
+  // Valor da contribuição (default: o que falta)
+  const [amountCents, setAmountCents] = useState(remainingCents);
+
+  // Atualiza se o presente mudar
+  useEffect(() => {
+    setAmountCents(remainingCents);
+  }, [remainingCents]);
 
   // Trava o scroll do body
   useEffect(() => {
@@ -48,6 +75,16 @@ export default function ReserveModal({
     e.preventDefault();
     if (status !== "idle") return;
 
+    if (amountCents < 100) {
+      setError("O valor mínimo é R$ 1,00.");
+      return;
+    }
+
+    if (amountCents > remainingCents) {
+      setError(`O valor máximo é ${formatBRL(remainingCents)}.`);
+      return;
+    }
+
     const fd = new FormData(e.currentTarget);
     const name = String(fd.get("name") ?? "").trim();
     const email = String(fd.get("email") ?? "").trim();
@@ -60,7 +97,12 @@ export default function ReserveModal({
       const res = await fetch(`/api/gifts/${gift.id}/reserve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, message }),
+        body: JSON.stringify({
+          name,
+          email,
+          message,
+          contributionCents: amountCents,
+        }),
       });
 
       if (!res.ok) {
@@ -75,17 +117,26 @@ export default function ReserveModal({
       }
 
       setReserverName(name);
-
-      // Notifica o componente pai (opcional)
       onReserved?.(gift.id, name);
 
-      // Redireciona pro Checkout Pro do Mercado Pago
       window.location.href = initPoint;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro inesperado.");
       setStatus("idle");
     }
   }
+
+  // Sugestões rápidas (25%, 50%, 75%, 100% do que falta)
+  const quickOptions = useMemo(() => {
+    const opts = [
+      Math.round(remainingCents * 0.25),
+      Math.round(remainingCents * 0.5),
+      Math.round(remainingCents * 0.75),
+      remainingCents,
+    ];
+    // Remove duplicadas e valores abaixo de R$ 1
+    return [...new Set(opts)].filter((v) => v >= 100);
+  }, [remainingCents]);
 
   return (
     <motion.div
@@ -104,7 +155,6 @@ export default function ReserveModal({
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-ink/[0.07] bg-cream shadow-[0_40px_100px_-40px_rgba(38,34,32,0.6)]"
       >
-        {/* Botão de fechar */}
         <button
           type="button"
           onClick={() => status !== "sending" && onClose()}
@@ -157,16 +207,90 @@ export default function ReserveModal({
                   </p>
                 )}
 
-                <div className="mt-5 flex items-baseline justify-between border-y border-ink/[0.06] py-4">
-                  <span className="text-[0.62rem] uppercase tracking-[0.35em] text-ink/45">
-                    Valor sugerido
-                  </span>
-                  <span className="font-display text-2xl tabular-nums text-gold">
-                    {formatBRL(gift.priceCents)}
-                  </span>
+                {/* Resumo de progresso */}
+                <div className="mt-5 rounded-2xl border border-ink/[0.06] bg-cream-dark/40 px-5 py-4">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-[0.6rem] uppercase tracking-[0.3em] text-ink/50">
+                      Falta arrecadar
+                    </span>
+                    <span className="font-display text-xl tabular-nums text-gold">
+                      {formatBRL(remainingCents)}
+                    </span>
+                  </div>
+                  {gift.raisedCents > 0 && (
+                    <>
+                      <div className="mt-3 h-1 overflow-hidden rounded-full bg-ink/[0.08]">
+                        <div
+                          className="h-full rounded-full bg-gold"
+                          style={{ width: `${gift.progress}%` }}
+                        />
+                      </div>
+                      <p className="mt-2 text-[0.65rem] text-ink/45">
+                        {formatBRL(gift.raisedCents)} arrecadados de{" "}
+                        {formatBRL(gift.priceCents)}
+                        {gift.contributorsCount > 0 &&
+                          ` · ${gift.contributorsCount} ${
+                            gift.contributorsCount === 1
+                              ? "contribuinte"
+                              : "contribuintes"
+                          }`}
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+                  {/* Valor da contribuição */}
+                  <div>
+                    <label
+                      htmlFor="res-amount"
+                      className="mb-2 block text-[0.6rem] uppercase tracking-[0.35em] text-ink/50"
+                    >
+                      Quanto quer contribuir?
+                    </label>
+
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm text-ink/40">
+                        R$
+                      </span>
+                      <input
+                        id="res-amount"
+                        type="text"
+                        inputMode="decimal"
+                        value={centsToInput(amountCents)}
+                        onChange={(e) =>
+                          setAmountCents(parseBRLtoCents(e.target.value))
+                        }
+                        onBlur={() => {
+                          if (amountCents < 100) setAmountCents(100);
+                          if (amountCents > remainingCents)
+                            setAmountCents(remainingCents);
+                        }}
+                        className={`${INPUT} pl-10 font-display text-lg tabular-nums`}
+                      />
+                    </div>
+
+                    {/* Sugestões rápidas */}
+                    {quickOptions.length > 1 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {quickOptions.map((opt) => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setAmountCents(opt)}
+                            className={`rounded-full border px-3 py-1 text-[0.62rem] tabular-nums transition-colors ${
+                              amountCents === opt
+                                ? "border-gold bg-gold text-cream"
+                                : "border-ink/15 text-ink/60 hover:border-gold/50 hover:text-gold"
+                            }`}
+                          >
+                            {formatBRL(opt)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div>
                     <label
                       htmlFor="res-name"
@@ -232,7 +356,6 @@ export default function ReserveModal({
                     )}
                   </AnimatePresence>
 
-                  {/* Aviso sobre o prazo */}
                   <div className="flex items-start gap-2.5 rounded-xl border border-gold/20 bg-gold/[0.05] px-4 py-3">
                     <svg
                       viewBox="0 0 24 24"
@@ -247,12 +370,11 @@ export default function ReserveModal({
                       <path d="M12 7v5.5l3.2 2" />
                     </svg>
                     <p className="text-xs leading-relaxed text-ink/70">
-                      Sua reserva é válida por{" "}
+                      Sua contribuição é válida por{" "}
                       <strong className="font-medium text-ink">
                         30 minutos
                       </strong>
-                      . Após esse período, o presente será liberado
-                      automaticamente.
+                      . Após esse período, ela será liberada para outra pessoa.
                     </p>
                   </div>
 
@@ -280,7 +402,7 @@ export default function ReserveModal({
                           Redirecionando…
                         </>
                       ) : (
-                        "Ir para o pagamento"
+                        `Contribuir com ${formatBRL(amountCents)}`
                       )}
                     </span>
                   </motion.button>
@@ -298,8 +420,6 @@ export default function ReserveModal({
     </motion.div>
   );
 }
-
-/* ---------------------------- Cartão de sucesso --------------------------- */
 
 function SuccessState({
   name,
@@ -367,7 +487,7 @@ function SuccessState({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, delay: 1.15, ease: EASE }}
       >
-        Seu presente foi reservado com sucesso. Você será redirecionado para o
+        Sua contribuição foi registrada. Você será redirecionado para o
         pagamento em instantes…
       </motion.p>
 

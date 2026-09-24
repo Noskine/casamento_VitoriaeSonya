@@ -133,6 +133,12 @@ export default function DashboardClient({
               Presentes ({gifts.filter((g) => g.active).length})
             </Link>
           </div>
+          <Link
+  href="/admin/orfaos"
+  className="rounded-full border border-ink/15 px-5 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-ink/60 transition-colors hover:border-gold/50 hover:text-gold"
+>
+  Órfãos
+</Link>
           <form action={logoutAction}>
             <button
               type="submit"

@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getSupabase } from "../../../../lib/supabase";
-import { getPaymentClient } from "../../../../lib/mercadopago";
+import { getPaymentClient, getRefundClient } from "../../../../lib/mercadopago";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +29,6 @@ function validateSignature(
   if (!ts || !v1) return false;
 
   const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
-
   const expected = createHmac("sha256", secret)
     .update(manifest)
     .digest("hex");
@@ -88,6 +87,11 @@ async function processPayment(paymentId: string) {
 
   const status = payment.status ?? "unknown";
   const method = payment.payment_method_id ?? null;
+  const amountCents = payment.transaction_amount
+    ? Math.round(payment.transaction_amount * 100)
+    : 0;
+  const payerName = payment.payer?.first_name ?? null;
+  const payerEmail = payment.payer?.email ?? null;
 
   const { data: existing } = await supabase
     .from("gift_reservations")
@@ -95,23 +99,26 @@ async function processPayment(paymentId: string) {
     .eq("id", reservationId)
     .maybeSingle();
 
-  // CASO A: Reserva já foi apagada pelo cron
+  // ---------------------------------------------------------------------------
+  // CASO A: Reserva não existe mais (cron de 30 min já removeu)
+  // ---------------------------------------------------------------------------
   if (!existing) {
-    console.warn(
-      `[webhook] Reserva ${reservationId} não existe mais. ` +
-        `Pagamento ${paymentId} chegou com status "${status}".`,
-    );
-
-    if (status === "approved") {
-      console.error(
-        `[webhook] ⚠️ PAGAMENTO ÓRFÃO: ${paymentId} aprovado para reserva inexistente.`,
-      );
-    }
-
+    await handleOrphanPayment({
+      paymentId,
+      reservationId,
+      status,
+      method,
+      amountCents,
+      payerName,
+      payerEmail,
+      rawPayment: payment,
+    });
     return;
   }
 
+  // ---------------------------------------------------------------------------
   // CASO B: Idempotência
+  // ---------------------------------------------------------------------------
   if (
     existing.payment_id === paymentId &&
     existing.payment_status === status
@@ -119,13 +126,10 @@ async function processPayment(paymentId: string) {
     return;
   }
 
+  // ---------------------------------------------------------------------------
   // CASO C: Pagamento morreu → libera o presente
+  // ---------------------------------------------------------------------------
   if (DEAD_STATUSES.includes(status)) {
-    console.log(
-      `[webhook] Pagamento ${paymentId} com status "${status}". ` +
-        `Liberando reserva ${reservationId}.`,
-    );
-
     const { error } = await supabase
       .from("gift_reservations")
       .delete()
@@ -133,16 +137,13 @@ async function processPayment(paymentId: string) {
 
     if (error) {
       console.error("[webhook] Falha ao liberar reserva:", error);
-    } else {
-      console.log(
-        `[webhook] Presente ${existing.gift_id} liberado novamente.`,
-      );
     }
-
     return;
   }
 
-  // CASO D: Pagamento em processamento
+  // ---------------------------------------------------------------------------
+  // CASO D: Pagamento pendente
+  // ---------------------------------------------------------------------------
   if (
     status === "pending" ||
     status === "in_process" ||
@@ -156,12 +157,12 @@ async function processPayment(paymentId: string) {
         payment_method: method,
       })
       .eq("id", reservationId);
-
-    console.log(`[webhook] Pagamento ${paymentId} ainda pendente (${status}).`);
     return;
   }
 
+  // ---------------------------------------------------------------------------
   // CASO E: Pagamento aprovado
+  // ---------------------------------------------------------------------------
   if (status === "approved") {
     const { error } = await supabase
       .from("gift_reservations")
@@ -180,7 +181,7 @@ async function processPayment(paymentId: string) {
     }
 
     console.log(
-      `[webhook] ✅ Pagamento ${paymentId} aprovado. Reserva ${reservationId} marcada como paga.`,
+      `[webhook] ✅ Pagamento ${paymentId} aprovado. Reserva ${reservationId} paga.`,
     );
     return;
   }
@@ -188,4 +189,103 @@ async function processPayment(paymentId: string) {
   console.warn(
     `[webhook] Pagamento ${paymentId} com status não tratado: "${status}"`,
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Pagamento órfão — sem e-mail, só banco + log                               */
+/* -------------------------------------------------------------------------- */
+
+async function handleOrphanPayment({
+  paymentId,
+  reservationId,
+  status,
+  method,
+  amountCents,
+  payerName,
+  payerEmail,
+  rawPayment,
+}: {
+  paymentId: string;
+  reservationId: string;
+  status: string;
+  method: string | null;
+  amountCents: number;
+  payerName: string | null;
+  payerEmail: string | null;
+  rawPayment: unknown;
+}) {
+  const supabase = getSupabase();
+
+  console.warn(
+    `[webhook] Reserva ${reservationId} não existe mais. ` +
+      `Pagamento ${paymentId} chegou com status "${status}".`,
+  );
+
+  if (status !== "approved") return;
+
+  console.error(
+    `[webhook] ⚠️ PAGAMENTO ÓRFÃO: ${paymentId} aprovado para reserva inexistente. ` +
+      `Valor: R$ ${(amountCents / 100).toFixed(2)}.`,
+  );
+
+  // 1. Idempotência
+  const { data: alreadyLogged } = await supabase
+    .from("orphan_payments")
+    .select("id, refund_status")
+    .eq("payment_id", paymentId)
+    .maybeSingle();
+
+  if (alreadyLogged) {
+    console.log(
+      `[webhook] Órfão ${paymentId} já registrado (refund: ${alreadyLogged.refund_status}).`,
+    );
+    return;
+  }
+
+  // 2. Tenta reembolsar automaticamente
+  let refundStatus: "refunded" | "failed" | "pending" = "pending";
+  let refundId: string | null = null;
+
+  try {
+    const refund = await getRefundClient().create({
+      payment_id: paymentId,
+    });
+
+    refundId = refund.id ? String(refund.id) : null;
+
+    if (refund.status === "approved" || refund.status === "refunded") {
+      refundStatus = "refunded";
+      console.log(
+        `[webhook] ✅ Reembolso automático OK para ${paymentId}. Refund ID: ${refundId}`,
+      );
+    } else {
+      refundStatus = "pending";
+      console.warn(
+        `[webhook] Reembolso de ${paymentId} retornou status "${refund.status}".`,
+      );
+    }
+  } catch (err) {
+    refundStatus = "failed";
+    console.error(
+      `[webhook] ❌ Falha no reembolso automático de ${paymentId}:`,
+      err,
+    );
+  }
+
+  // 3. Registra no banco — sem e-mail
+  const { error: logErr } = await supabase.from("orphan_payments").insert({
+    payment_id: paymentId,
+    reservation_id: reservationId,
+    amount_cents: amountCents,
+    method,
+    payer_name: payerName,
+    payer_email: payerEmail,
+    refund_status: refundStatus,
+    refund_id: refundId,
+    raw_payload: rawPayment as Record<string, unknown>,
+  });
+
+  if (logErr) {
+    console.error("[webhook] Falha ao registrar órfão:", logErr);
+  }
 }

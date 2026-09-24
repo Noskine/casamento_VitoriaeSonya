@@ -1,5 +1,6 @@
+// lib/mercadopago.ts
 import "server-only";
-import { MercadoPagoConfig, Payment, Preference } from "mercadopago";
+import { MercadoPagoConfig, Payment, PaymentRefund, Preference } from "mercadopago";
 
 let client: MercadoPagoConfig | null = null;
 
@@ -21,4 +22,8 @@ export function getPreferenceClient() {
 
 export function getPaymentClient() {
   return new Payment(getMP());
+}
+
+export function getRefundClient() {
+  return new PaymentRefund(getMP());
 }

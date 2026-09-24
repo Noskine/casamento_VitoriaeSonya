@@ -1,3 +1,4 @@
+// lib/gift-schema.ts
 import { z } from "zod";
 
 export const giftSchema = z.object({
@@ -19,12 +20,13 @@ export const reservationSchema = z.object({
   name: z.string().trim().min(2, "Nome muito curto").max(120),
   email: z.string().trim().toLowerCase().email("E-mail inválido").max(200),
   message: z.string().trim().max(600).nullish(),
+  // Valor que a pessoa escolheu contribuir (em centavos)
+  contributionCents: z.coerce.number().int().min(100, "Mínimo R$ 1,00"),
 });
 
 export type GiftInput = z.infer<typeof giftSchema>;
 export type ReservationInput = z.infer<typeof reservationSchema>;
 
-/** Formata centavos como "R$ 150,00" */
 export function formatBRL(cents: number): string {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
