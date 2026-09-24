@@ -128,7 +128,7 @@ export default function NotFoundClient() {
           animate={{ opacity: 1 }}
           transition={{ duration: 1, delay: 1.4 }}
         >
-          Ana <span className="text-gold">&</span> Lucas · 12 · 09 · 2026
+          Vitória <span className="text-gold">&</span> Sonay · 04 · 12 · 2026
         </motion.p>
       </div>
     </main>
