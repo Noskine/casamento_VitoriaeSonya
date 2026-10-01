@@ -1,6 +1,8 @@
 // app/api/reservations/[id]/status/route.ts
 import { NextResponse } from "next/server";
-import { getSupabase } from "../../../../../lib/supabase";
+import { eq } from "drizzle-orm";
+import { getDb } from "../../../../../lib/db";
+import { giftReservations, gifts } from "../../../../../lib/db/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,27 +17,25 @@ export async function GET(
     return NextResponse.json({ error: "ID inválido." }, { status: 400 });
   }
 
-  const supabase = getSupabase();
-
-  const { data, error } = await supabase
-    .from("gift_reservations")
-    .select(
-      `
-      id,
-      status,
-      payment_status,
-      payment_method,
-      paid_at,
-      amount_cents,
-      created_at,
-      gift_id,
-      gifts:gift_id ( name, image_url )
-    `,
-    )
-    .eq("id", id)
-    .maybeSingle();
-
-  if (error) {
+  let data;
+  try {
+    [data] = await getDb()
+      .select({
+        id: giftReservations.id,
+        status: giftReservations.status,
+        paymentStatus: giftReservations.paymentStatus,
+        paymentMethod: giftReservations.paymentMethod,
+        paidAt: giftReservations.paidAt,
+        amountCents: giftReservations.amountCents,
+        createdAt: giftReservations.createdAt,
+        giftName: gifts.name,
+        giftImageUrl: gifts.imageUrl,
+      })
+      .from(giftReservations)
+      .innerJoin(gifts, eq(giftReservations.giftId, gifts.id))
+      .where(eq(giftReservations.id, id))
+      .limit(1);
+  } catch (error) {
     console.error("[status] erro:", error);
     return NextResponse.json(
       { error: "Erro ao consultar." },
@@ -115,11 +115,11 @@ export async function GET(
   // ---------------------------------------------------------------------------
   return NextResponse.json({
     status: data.status,
-    paymentStatus: data.payment_status,
-    paymentMethod: data.payment_method,
-    paidAt: data.paid_at,
-    amountCents: data.amount_cents,
-    createdAt: data.created_at,
-    gift: Array.isArray(data.gifts) ? data.gifts[0] : data.gifts,
+    paymentStatus: data.paymentStatus,
+    paymentMethod: data.paymentMethod,
+    paidAt: data.paidAt,
+    amountCents: data.amountCents,
+    createdAt: data.createdAt,
+    gift: { name: data.giftName, image_url: data.giftImageUrl },
   });
 }

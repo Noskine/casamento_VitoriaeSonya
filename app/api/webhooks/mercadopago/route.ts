@@ -1,7 +1,9 @@
 // app/api/webhooks/mercadopago/route.ts
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { getSupabase } from "../../../../lib/supabase";
+import { eq } from "drizzle-orm";
+import { getDb } from "../../../../lib/db";
+import { giftReservations, orphanPayments } from "../../../../lib/db/schema";
 import { getPaymentClient, getRefundClient } from "../../../../lib/mercadopago";
 
 export const runtime = "nodejs";
@@ -69,7 +71,7 @@ export async function POST(req: Request) {
 }
 
 async function processPayment(paymentId: string) {
-  const supabase = getSupabase();
+  const db = getDb();
 
   let payment;
   try {
@@ -93,11 +95,16 @@ async function processPayment(paymentId: string) {
   const payerName = payment.payer?.first_name ?? null;
   const payerEmail = payment.payer?.email ?? null;
 
-  const { data: existing } = await supabase
-    .from("gift_reservations")
-    .select("id, payment_id, payment_status, gift_id")
-    .eq("id", reservationId)
-    .maybeSingle();
+  const [existing] = await db
+    .select({
+      id: giftReservations.id,
+      paymentId: giftReservations.paymentId,
+      paymentStatus: giftReservations.paymentStatus,
+      giftId: giftReservations.giftId,
+    })
+    .from(giftReservations)
+    .where(eq(giftReservations.id, reservationId))
+    .limit(1);
 
   // ---------------------------------------------------------------------------
   // CASO A: Reserva não existe mais (cron de 30 min já removeu)
@@ -120,8 +127,8 @@ async function processPayment(paymentId: string) {
   // CASO B: Idempotência
   // ---------------------------------------------------------------------------
   if (
-    existing.payment_id === paymentId &&
-    existing.payment_status === status
+    existing.paymentId === paymentId &&
+    existing.paymentStatus === status
   ) {
     return;
   }
@@ -130,12 +137,19 @@ async function processPayment(paymentId: string) {
   // CASO C: Pagamento morreu → libera o presente
   // ---------------------------------------------------------------------------
   if (DEAD_STATUSES.includes(status)) {
-    const { error } = await supabase
-      .from("gift_reservations")
-      .delete()
-      .eq("id", reservationId);
+    console.log(
+      `[webhook] Pagamento ${paymentId} com status "${status}". ` +
+        `Liberando reserva ${reservationId}.`,
+    );
 
-    if (error) {
+    try {
+      await db
+        .delete(giftReservations)
+        .where(eq(giftReservations.id, reservationId));
+      console.log(
+        `[webhook] Presente ${existing.giftId} liberado novamente.`,
+      );
+    } catch (error) {
       console.error("[webhook] Falha ao liberar reserva:", error);
     }
     return;
@@ -149,14 +163,16 @@ async function processPayment(paymentId: string) {
     status === "in_process" ||
     status === "authorized"
   ) {
-    await supabase
-      .from("gift_reservations")
-      .update({
-        payment_id: paymentId,
-        payment_status: status,
-        payment_method: method,
+    await db
+      .update(giftReservations)
+      .set({
+        paymentId,
+        paymentStatus: status,
+        paymentMethod: method,
       })
-      .eq("id", reservationId);
+      .where(eq(giftReservations.id, reservationId));
+
+    console.log(`[webhook] Pagamento ${paymentId} ainda pendente (${status}).`);
     return;
   }
 
@@ -164,18 +180,18 @@ async function processPayment(paymentId: string) {
   // CASO E: Pagamento aprovado
   // ---------------------------------------------------------------------------
   if (status === "approved") {
-    const { error } = await supabase
-      .from("gift_reservations")
-      .update({
-        status: "paid",
-        payment_id: paymentId,
-        payment_status: status,
-        payment_method: method,
-        paid_at: new Date().toISOString(),
-      })
-      .eq("id", reservationId);
-
-    if (error) {
+    try {
+      await db
+        .update(giftReservations)
+        .set({
+          status: "paid",
+          paymentId,
+          paymentStatus: status,
+          paymentMethod: method,
+          paidAt: new Date().toISOString(),
+        })
+        .where(eq(giftReservations.id, reservationId));
+    } catch (error) {
       console.error("[webhook] Falha ao marcar como pago:", error);
       return;
     }
@@ -214,7 +230,7 @@ async function handleOrphanPayment({
   payerEmail: string | null;
   rawPayment: unknown;
 }) {
-  const supabase = getSupabase();
+  const db = getDb();
 
   console.warn(
     `[webhook] Reserva ${reservationId} não existe mais. ` +
@@ -228,17 +244,28 @@ async function handleOrphanPayment({
       `Valor: R$ ${(amountCents / 100).toFixed(2)}.`,
   );
 
-  // 1. Idempotência
-  const { data: alreadyLogged } = await supabase
-    .from("orphan_payments")
-    .select("id, refund_status")
-    .eq("payment_id", paymentId)
-    .maybeSingle();
+  // Reserve the payment ID before refunding so duplicate webhooks cannot refund twice.
+  const rawPayload =
+    typeof rawPayment === "object" && rawPayment !== null
+      ? (rawPayment as Record<string, unknown>)
+      : { value: rawPayment };
+  const [orphan] = await db
+    .insert(orphanPayments)
+    .values({
+      paymentId,
+      reservationId,
+      amountCents,
+      method,
+      payerName,
+      payerEmail,
+      refundStatus: "pending",
+      rawPayload,
+    })
+    .onConflictDoNothing({ target: orphanPayments.paymentId })
+    .returning({ id: orphanPayments.id });
 
-  if (alreadyLogged) {
-    console.log(
-      `[webhook] Órfão ${paymentId} já registrado (refund: ${alreadyLogged.refund_status}).`,
-    );
+  if (!orphan) {
+    console.log(`[webhook] Órfão ${paymentId} já registrado.`);
     return;
   }
 
@@ -272,20 +299,16 @@ async function handleOrphanPayment({
     );
   }
 
-  // 3. Registra no banco — sem e-mail
-  const { error: logErr } = await supabase.from("orphan_payments").insert({
-    payment_id: paymentId,
-    reservation_id: reservationId,
-    amount_cents: amountCents,
-    method,
-    payer_name: payerName,
-    payer_email: payerEmail,
-    refund_status: refundStatus,
-    refund_id: refundId,
-    raw_payload: rawPayment as Record<string, unknown>,
-  });
-
-  if (logErr) {
-    console.error("[webhook] Falha ao registrar órfão:", logErr);
+  try {
+    await db
+      .update(orphanPayments)
+      .set({
+        refundStatus,
+        refundId,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(orphanPayments.id, orphan.id));
+  } catch (error) {
+    console.error("[webhook] Falha ao atualizar o estado do órfão:", error);
   }
 }

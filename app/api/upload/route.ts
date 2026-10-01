@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { getSupabase } from "../../../lib/supabase";
+import { put } from "@vercel/blob";
 import { isAuthenticated } from "../../../lib/admin-auth";
 
 export const runtime = "nodejs";
@@ -48,27 +48,23 @@ export async function POST(req: Request) {
   const filename = `${randomUUID()}.${ext}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  const supabase = getSupabase();
-  const { error } = await supabase.storage
-    .from("gifts")
-    .upload(filename, buffer, {
+  try {
+    const blob = await put(filename, new Blob([buffer]), {
+      access: "public",
+      addRandomSuffix: false,
       contentType: file.type,
-      cacheControl: "31536000",
-      upsert: false,
+      cacheControlMaxAge: 31536000,
     });
 
-  if (error) {
+    return NextResponse.json({
+      url: blob.url,
+      path: blob.pathname,
+    });
+  } catch (error) {
     console.error("[upload]", error);
     return NextResponse.json(
       { error: "Falha ao enviar a imagem." },
       { status: 500 },
     );
   }
-
-  const { data } = supabase.storage.from("gifts").getPublicUrl(filename);
-
-  return NextResponse.json({
-    url: data.publicUrl,
-    path: filename,
-  });
 }

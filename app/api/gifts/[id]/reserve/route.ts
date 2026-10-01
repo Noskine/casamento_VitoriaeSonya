@@ -1,6 +1,11 @@
 // app/api/gifts/[id]/reserve/route.ts
 import { NextResponse } from "next/server";
-import { getSupabase } from "../../../../../lib/supabase";
+import {
+  deleteGiftReservation,
+  getGiftById,
+  getGiftRaisedCents,
+  reserveGift,
+} from "../../../../../lib/gift-store";
 import { getPreferenceClient } from "../../../../../lib/mercadopago";
 import { reservationSchema } from "../../../../../lib/gift-schema";
 
@@ -30,16 +35,21 @@ export async function POST(
     );
   }
 
-  const supabase = getSupabase();
+  // 1. Confere o presente e o valor que falta arrecadar.
+  let gift;
+  let raisedCents: number;
+  try {
+    gift = await getGiftById(giftId);
+    raisedCents = await getGiftRaisedCents(giftId);
+  } catch (error) {
+    console.error("[reserve] consulta do presente:", error);
+    return NextResponse.json(
+      { error: "Não foi possível reservar." },
+      { status: 500 },
+    );
+  }
 
-  // 1. Busca o presente
-  const { data: gift, error: giftErr } = await supabase
-    .from("gifts")
-    .select("id, name, price_cents, active")
-    .eq("id", giftId)
-    .single();
-
-  if (giftErr || !gift) {
+  if (!gift) {
     return NextResponse.json(
       { error: "Presente não encontrado." },
       { status: 404 },
@@ -53,32 +63,24 @@ export async function POST(
     );
   }
 
-  // ⚠️ AQUI é onde antes existia o bloqueio de "já reservado".
-  // Agora não tem nada — múltiplas reservas são permitidas.
+  if (parsed.data.contributionCents > gift.priceCents - raisedCents) {
+    return NextResponse.json(
+      { error: "A contribuição excede o valor que falta arrecadar." },
+      { status: 409 },
+    );
+  }
 
-  // 2. Cria a reserva — sem checar duplicidade
-  const { data: reservation, error: resErr } = await supabase
-    .from("gift_reservations")
-    .insert({
-      gift_id: giftId,
-      name: parsed.data.name,
-      email: parsed.data.email,
-      message: parsed.data.message || null,
-      status: "reserved",
-      payment_status: "pending",
-      amount_cents: gift.price_cents,
-    })
-    .select()
-    .single();
-
-  if (resErr) {
-    console.error("[reserve]", resErr);
+  // 2. Registra a contribuição parcial escolhida pela pessoa.
+  let reservation: { ok: true; reservationId: string };
+  try {
+    reservation = await reserveGift(giftId, parsed.data);
+  } catch (error) {
+    console.error("[reserve] criação da reserva:", error);
     return NextResponse.json(
       { error: "Não foi possível reservar." },
       { status: 500 },
     );
   }
-
   // 3. Cria a preferência no Mercado Pago
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL!;
   const expiration = new Date(
@@ -94,7 +96,7 @@ export async function POST(
             title: `Presente: ${gift.name}`,
             description: `Presente de ${parsed.data.name} para o casamento`,
             quantity: 1,
-            unit_price: gift.price_cents / 100,
+            unit_price: parsed.data.contributionCents / 100,
             currency_id: "BRL",
           },
         ],
@@ -102,12 +104,12 @@ export async function POST(
           name: parsed.data.name,
           email: parsed.data.email,
         },
-        external_reference: reservation.id,
+        external_reference: reservation.reservationId,
         notification_url: `${siteUrl}/api/webhooks/mercadopago`,
         back_urls: {
-          success: `${siteUrl}/presentes/obrigado?status=approved&rid=${reservation.id}`,
-          pending: `${siteUrl}/presentes/obrigado?status=pending&rid=${reservation.id}`,
-          failure: `${siteUrl}/presentes/obrigado?status=rejected&rid=${reservation.id}`,
+          success: `${siteUrl}/presentes/obrigado?status=approved&rid=${reservation.reservationId}`,
+          pending: `${siteUrl}/presentes/obrigado?status=pending&rid=${reservation.reservationId}`,
+          failure: `${siteUrl}/presentes/obrigado?status=rejected&rid=${reservation.reservationId}`,
         },
         auto_return: "approved",
         statement_descriptor: "CASAMENTO VITORIA SONYA",
@@ -119,8 +121,8 @@ export async function POST(
     return NextResponse.json(
       {
         ok: true,
-        reservationId: reservation.id,
-        amountCents: gift.price_cents,
+        reservationId: reservation.reservationId,
+        amountCents: parsed.data.contributionCents,
         expiresAt: expiration,
         initPoint: preference.init_point,
         sandboxInitPoint: preference.sandbox_init_point,
@@ -130,7 +132,7 @@ export async function POST(
   } catch (err) {
     console.error("[reserve] MP preference:", err);
 
-    await supabase.from("gift_reservations").delete().eq("id", reservation.id);
+    await deleteGiftReservation(reservation.reservationId);
 
     return NextResponse.json(
       { error: "Não foi possível iniciar o pagamento." },

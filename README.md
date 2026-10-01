@@ -2,7 +2,7 @@
 
 Site de convite de casamento com lista de presentes, confirmação de presença (RSVP) e pagamento via Mercado Pago (Pix, cartão e boleto).
 
-Construído com **Next.js 16**, **Motion** para animações, **Supabase** como banco e storage, **Mercado Pago** para pagamentos e **Resend** para e-mails.
+Construído com Next.js 16, Drizzle ORM sobre Supabase PostgreSQL, Vercel Blob para imagens e Mercado Pago para pagamentos.
 
 ## ✨ Funcionalidades
 
@@ -19,9 +19,8 @@ Construído com **Next.js 16**, **Motion** para animações, **Supabase** como b
 
 - Autenticação por senha com cookie assinado (HMAC-SHA256).
 - Dashboard de confirmações com busca, filtros, estatísticas e exportação para CSV.
-- Gerenciamento da lista de presentes com upload de imagens direto para o bucket do Supabase.
+- Gerenciamento da lista de presentes com upload de imagens para Vercel Blob.
 - Reservas em tempo real com status de pagamento (pendente, aprovado, rejeitado).
-- Notificação por e-mail a cada confirmação de presença e a cada presente pago.
 
 ## 🛠️ Stack
 
@@ -31,10 +30,9 @@ Construído com **Next.js 16**, **Motion** para animações, **Supabase** como b
 | Linguagem | TypeScript |
 | Estilização | Tailwind CSS v4 |
 | Animações | Motion (framer-motion) |
-| Banco de dados | Supabase (PostgreSQL) |
-| Storage | Supabase Storage |
+| Banco de dados | Supabase PostgreSQL via Drizzle ORM |
+| Storage | Vercel Blob |
 | Pagamentos | Mercado Pago (Checkout Pro) |
-| E-mails | Resend |
 | Validação | Zod |
 | Testes | Vitest + Testing Library |
 | Runtime de testes | Node.js (via `npx vitest`) |
@@ -44,8 +42,8 @@ Construído com **Next.js 16**, **Motion** para animações, **Supabase** como b
 - Node.js 20+ (para rodar os testes)
 - Bun 1.1+ (recomendado para dev e build)
 - Conta no Supabase
+- Conta Vercel com um Blob Store
 - Conta no Mercado Pago com aplicação criada
-- Conta no Resend (opcional, mas recomendado)
 - ngrok ou Hookdeck CLI para testar webhooks localmente
 
 ## 🚀 Instalação
@@ -65,17 +63,15 @@ bun install
 
 ### 3. Configure as variáveis de ambiente
 
-Crie um arquivo `.env.local` na raiz com as variáveis abaixo.
-
-> **Nunca comite este arquivo** — ele já está no `.gitignore`.
-
 ## 🔐 Variáveis de ambiente
 
-### Supabase
+Crie `.env.local` a partir de `.env.example`. Nunca comite esse arquivo; ele está no `.gitignore`.
+
+### Banco e imagens
 
 ```env
-SUPABASE_URL="https://xxxx.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOi..."
+DATABASE_URL="postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres?sslmode=require"
+BLOB_READ_WRITE_TOKEN="vercel_blob_rw_..."
 ```
 
 ### Painel Admin
@@ -112,14 +108,6 @@ MERCADOPAGO_WEBHOOK_SECRET="..."
 NEXT_PUBLIC_SITE_URL="https://seu-site.vercel.app"
 ```
 
-### Resend (opcional)
-
-```env
-RESEND_API_KEY="re_..."
-RSVP_NOTIFY_FROM="Casamento <rsvp@seudominio.com>"
-RSVP_NOTIFY_TO="noivos@email.com,convidado@email.com"
-```
-
 ### Prazo do RSVP
 
 Definido em `lib/rsvp.ts` (não usa env por padrão).
@@ -128,17 +116,26 @@ Definido em `lib/rsvp.ts` (não usa env por padrão).
 
 | Variável | Onde pegar |
 |---|---|
-| `SUPABASE_URL` | Supabase → Settings → API → Project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Settings → API → `service_role` (revelar) |
+| `DATABASE_URL` | Supabase → Settings → Database → Connect → Transaction Pooler |
+| `BLOB_READ_WRITE_TOKEN` | Vercel → Storage → Blob → token de leitura/gravação |
 | `MERCADOPAGO_ACCESS_TOKEN` | MP Developers → Credenciais |
 | `MERCADOPAGO_WEBHOOK_SECRET` | MP Developers → Webhooks → Configurar notificações |
-| `RESEND_API_KEY` | Resend → API Keys |
 
 ## 🗄️ Configuração do banco
 
-### 1. Rodar o schema no Supabase
+### 1. Configurar a conexão e aplicar migrações
 
-Abra o SQL Editor do Supabase e execute:
+Configure `DATABASE_URL` no `.env.local` e no ambiente de deploy. Use a URI do Transaction Pooler do Supabase, substituindo o placeholder pela senha do banco.
+
+Rode as migrações versionadas:
+
+```bash
+bun run db:migrate
+```
+
+O schema fonte está em `lib/db/schema.ts`; migrações ficam em `drizzle/`. Faça backup e confira a estrutura remota antes de aplicar migrações em produção. Para mudanças futuras no schema, rode `bun run db:generate` e revise o SQL antes de `bun run db:migrate`.
+
+O SQL abaixo documenta o schema-base e serve para comparação. Use as migrações Drizzle como etapa de instalação.
 
 ```sql
 -- ============================================================
@@ -258,24 +255,23 @@ alter table public.gifts enable row level security;
 alter table public.gift_reservations enable row level security;
 ```
 
-### 2. Criar o bucket de imagens
+### 2. Configurar Vercel Blob
 
-No Supabase:
+Crie um store em **Vercel → Storage → Blob** e configure `BLOB_READ_WRITE_TOKEN` localmente e no ambiente de deploy.
 
-**Storage → New bucket**
+Para transferir imagens públicas que ainda estão no bucket Supabase `gifts`, mantenha esse bucket acessível durante a cópia e rode primeiro a simulação:
 
-- Nome: `gifts`
-- Marque **Public bucket**
-
-Vá em **Policies** e adicione:
-
-```sql
-create policy "Gift images são públicas"
-on storage.objects
-for select
-to public
-using (bucket_id = 'gifts');
+```bash
+bun run storage:migrate
 ```
+
+Depois de conferir o resultado, aplique a transferência e atualização das URLs no banco:
+
+```bash
+bun run storage:migrate -- --apply
+```
+
+Links externos são ignorados. Faça backup antes de aplicar e mantenha o bucket antigo até validar as imagens no site.
 
 ### 3. (Opcional) Cron job para expirar reservas
 
@@ -288,27 +284,16 @@ create or replace function public.expire_stale_reservations()
 returns void
 language plpgsql
 as $$
-begin
-  delete from public.gift_reservations
-  where status = 'reserved'
-    and payment_status = 'pending'
-    and created_at < now() - interval '30 minutes';
-end;
-$$;
-
-select cron.schedule(
-  'expire-gift-reservations',
-  '* * * * *',
-  'select public.expire_stale_reservations();'
 );
+│   ├── db/                       # Conexão e schema Drizzle
 ```
 
 ## 🏃 Rodando localmente
+│   ├── orphan-store.ts           # Pagamentos órfãos e reembolsos
 
 ### Modo desenvolvimento
 
-```bash
-bun run dev
+│   └── rate-limit.ts             # 5 req/min por IP
 ```
 
 Acesse:
@@ -433,16 +418,16 @@ npx vitest run --coverage
 │   ├── ScrollProgress.tsx
 │   └── Story.tsx
 ├── lib/
-│   ├── admin-auth.ts                   # Cookie assinado com HMAC
-│   ├── email.ts                         # Resend
-│   ├── gift-schema.ts                   # Zod + formatBRL
-│   ├── gift-store.ts                    # CRUD de presentes
-│   ├── mercadopago.ts                   # SDK do MP
-│   ├── rate-limit.ts                    # 5 req/min por IP
-│   ├── rsvp-schema.ts                   # Zod
-│   ├── rsvp-store.ts                    # CRUD de RSVPs
-│   ├── rsvp.ts                          # Lógica de prazo
-│   └── supabase.ts                      # Client singleton
+│   ├── admin-auth.ts             # Cookie assinado com HMAC
+│   ├── db/                       # Conexão e schema Drizzle
+│   ├── gift-schema.ts            # Zod + formatBRL
+│   ├── gift-store.ts             # CRUD de presentes
+│   ├── mercadopago.ts            # SDK do MP
+│   ├── orphan-store.ts           # Pagamentos órfãos e reembolsos
+│   ├── rate-limit.ts             # 5 req/min por IP
+│   ├── rsvp-schema.ts            # Zod
+│   ├── rsvp-store.ts             # CRUD de RSVPs
+│   └── rsvp.ts                   # Lógica de prazo
 ├── test/
 │   └── setup.ts
 ├── vitest.config.ts
@@ -576,31 +561,34 @@ git push
 
 ### Boas práticas implementadas
 
-- Service Role Key nunca sai do servidor — todas as chamadas ao Supabase acontecem em Server Components ou API Routes.
+- `DATABASE_URL` e `BLOB_READ_WRITE_TOKEN` são usados somente no servidor; consultas ficam nos stores e Route Handlers.
 - Cookie de sessão assinado com HMAC-SHA256, HTTP-only, SameSite=Lax.
 - Senha e chave de sessão separadas — mesmo que a senha vaze, o cookie não pode ser forjado.
 - Validação com Zod em todas as rotas de API.
 - Rate limit de 5 req/min por IP nas rotas públicas.
 - IP hasheado com salt antes de salvar (LGPD).
 - Webhook do MP validado por assinatura HMAC.
-- RLS habilitado no Supabase, bloqueando acesso anônimo.
+- RLS habilitado no PostgreSQL; autenticação e validação das rotas protegem operações administrativas.
 
 ### ⚠️ Nunca comite `.env.local`
 
-Estas credenciais são especialmente sensíveis:
+Nunca versione credenciais reais, especialmente:
 
 ```text
-SUPABASE_SERVICE_ROLE_KEY
+DATABASE_URL
+BLOB_READ_WRITE_TOKEN
+MERCADOPAGO_ACCESS_TOKEN
+MERCADOPAGO_WEBHOOK_SECRET
 ADMIN_SESSION_SECRET
 ADMIN_PASSWORD
 ```
 
 Se alguma dessas vazar, rotacione imediatamente:
 
-1. **Supabase → Settings → API →** revogue/renove a `service_role`.
-2. **MP Developers → Credenciais →** renove o Access Token.
-3. **Vercel → Environment Variables →** atualize as variáveis.
-4. Faça um novo deploy.
+1. **Supabase → Settings → Database:** redefina a senha do banco.
+2. **MP Developers → Credenciais/Webhooks:** renove o Access Token e o segredo do webhook.
+3. **Vercel → Storage → Blob:** gere outro token de leitura/gravação.
+4. Atualize as variáveis no deploy e faça um novo build.
 
 ## 🐛 Problemas comuns
 

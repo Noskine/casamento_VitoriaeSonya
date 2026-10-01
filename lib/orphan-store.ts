@@ -1,6 +1,8 @@
 // lib/orphan-store.ts
 import "server-only";
-import { getSupabase } from "./supabase";
+import { desc, eq } from "drizzle-orm";
+import { getDb } from "./db";
+import { orphanPayments } from "./db/schema";
 
 export type OrphanPayment = {
   id: string;
@@ -15,43 +17,27 @@ export type OrphanPayment = {
   createdAt: string;
 };
 
-type Row = {
-  id: string;
-  payment_id: string;
-  reservation_id: string | null;
-  amount_cents: number;
-  method: string | null;
-  payer_name: string | null;
-  payer_email: string | null;
-  refund_status: "pending" | "refunded" | "failed" | "manual";
-  refund_id: string | null;
-  created_at: string;
-};
-
-function toOrphan(r: Row): OrphanPayment {
+function toOrphan(r: typeof orphanPayments.$inferSelect): OrphanPayment {
   return {
     id: r.id,
-    paymentId: r.payment_id,
-    reservationId: r.reservation_id,
-    amountCents: r.amount_cents,
+    paymentId: r.paymentId,
+    reservationId: r.reservationId,
+    amountCents: r.amountCents,
     method: r.method,
-    payerName: r.payer_name,
-    payerEmail: r.payer_email,
-    refundStatus: r.refund_status,
-    refundId: r.refund_id,
-    createdAt: r.created_at,
+    payerName: r.payerName,
+    payerEmail: r.payerEmail,
+    refundStatus: r.refundStatus,
+    refundId: r.refundId,
+    createdAt: r.createdAt,
   };
 }
 
 export async function listOrphanPayments(): Promise<OrphanPayment[]> {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("orphan_payments")
-    .select("*")
-    .order("created_at", { ascending: false });
-
-  if (error) throw new Error(error.message);
-  return (data as Row[]).map(toOrphan);
+  const rows = await getDb()
+    .select()
+    .from(orphanPayments)
+    .orderBy(desc(orphanPayments.createdAt));
+  return rows.map(toOrphan);
 }
 
 /** Marca manualmente um órfão como resolvido (admin libera). */
@@ -59,10 +45,8 @@ export async function markOrphanResolved(
   id: string,
   status: "manual" | "refunded",
 ): Promise<void> {
-  const supabase = getSupabase();
-  const { error } = await supabase
-    .from("orphan_payments")
-    .update({ refund_status: status, updated_at: new Date().toISOString() })
-    .eq("id", id);
-  if (error) throw new Error(error.message);
+  await getDb()
+    .update(orphanPayments)
+    .set({ refundStatus: status, updatedAt: new Date().toISOString() })
+    .where(eq(orphanPayments.id, id));
 }

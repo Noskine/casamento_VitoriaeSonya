@@ -1,7 +1,9 @@
 // lib/rsvp-store.ts
 import "server-only";
 import { createHash } from "node:crypto";
-import { getSupabase } from "./supabase";
+import { desc } from "drizzle-orm";
+import { getDb } from "./db";
+import { rsvps } from "./db/schema";
 import type { RsvpInput } from "./rsvp-schema";
 
 export type StoredRsvp = RsvpInput & {
@@ -19,21 +21,7 @@ function hashIp(ip: string) {
     .slice(0, 64);
 }
 
-type Row = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string | null;
-  attending: "yes" | "no";
-  guests: number;
-  guest_names: string | null;
-  diet: string | null;
-  message: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-function toStored(r: Row): StoredRsvp {
+function toStored(r: typeof rsvps.$inferSelect): StoredRsvp {
   return {
     id: r.id,
     name: r.name,
@@ -41,11 +29,11 @@ function toStored(r: Row): StoredRsvp {
     phone: r.phone ?? "",
     attending: r.attending,
     guests: r.guests,
-    guestNames: r.guest_names ?? "",
+    guestNames: r.guestNames ?? "",
     diet: r.diet ?? "",
     message: r.message ?? "",
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
   };
 }
 
@@ -53,40 +41,42 @@ export async function saveRsvp(
   input: RsvpInput,
   meta: SaveMeta = {},
 ): Promise<StoredRsvp> {
-  const supabase = getSupabase(); // ← aqui
-
-  const { data, error } = await supabase
-    .from("rsvps")
-    .upsert(
-      {
+  const [row] = await getDb()
+    .insert(rsvps)
+    .values({
         name: input.name,
         email: input.email,
         phone: input.phone || null,
         attending: input.attending,
         guests: input.guests,
-        guest_names: input.guestNames || null,
+        guestNames: input.guestNames || null,
         diet: input.diet || null,
         message: input.message || null,
-        ip_hash: meta.ip ? hashIp(meta.ip) : null,
-        user_agent: meta.userAgent?.slice(0, 300) ?? null,
+        ipHash: meta.ip ? hashIp(meta.ip) : null,
+        userAgent: meta.userAgent?.slice(0, 300) ?? null,
+      })
+    .onConflictDoUpdate({
+      target: rsvps.email,
+      set: {
+        name: input.name,
+        phone: input.phone || null,
+        attending: input.attending,
+        guests: input.guests,
+        guestNames: input.guestNames || null,
+        diet: input.diet || null,
+        message: input.message || null,
+        ipHash: meta.ip ? hashIp(meta.ip) : null,
+        userAgent: meta.userAgent?.slice(0, 300) ?? null,
+        updatedAt: new Date().toISOString(),
       },
-      { onConflict: "email" },
-    )
-    .select()
-    .single();
+    })
+    .returning();
 
-  if (error) throw new Error(error.message);
-  return toStored(data as Row);
+  if (!row) throw new Error("Não foi possível salvar a confirmação.");
+  return toStored(row);
 }
 
 export async function listRsvps(): Promise<StoredRsvp[]> {
-  const supabase = getSupabase(); // ← aqui
-
-  const { data, error } = await supabase
-    .from("rsvps")
-    .select("*")
-    .order("created_at", { ascending: false });
-
-  if (error) throw new Error(error.message);
-  return (data as Row[]).map(toStored);
+  const rows = await getDb().select().from(rsvps).orderBy(desc(rsvps.createdAt));
+  return rows.map(toStored);
 }
