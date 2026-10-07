@@ -17,3 +17,4 @@ export default async function AdminGiftsPage() {
   const gifts = await listGifts({ includeInactive: true });
   return <GiftsAdmin initialGifts={gifts} />;
 }
+

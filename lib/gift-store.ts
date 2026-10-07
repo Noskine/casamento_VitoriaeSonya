@@ -3,6 +3,7 @@ import "server-only";
 import { getSupabase } from "./supabase";
 import type { GiftInput, ReservationInput } from "./gift-schema";
 
+// lib/gift-store.ts
 export type Gift = {
   id: string;
   name: string;
@@ -12,19 +13,12 @@ export type Gift = {
   externalLink: string;
   position: number;
   active: boolean;
-  /** Nome do primeiro contribuinte (compatibilidade retroativa). */
   reservedBy: string | null;
-  /** Todos os contribuintes confirmados. */
   contributors: string[];
-  /** Total arrecadado (em centavos), só de pagamentos aprovados. */
   raisedCents: number;
-  /** Quantos contribuíram (só aprovados). */
-  contributorsCount: number;
-  /** Total de reservas ativas (aprovadas ou pendentes). */
+  contributorsCount: number;   // ← esse
   activeReservations: number;
-  /** Se o valor total já foi atingido. */
   isComplete: boolean;
-  /** Progresso de 0 a 100 (baseado no valor arrecadado). */
   progress: number;
   createdAt: string;
 };
